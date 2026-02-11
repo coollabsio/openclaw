@@ -133,7 +133,7 @@ If a provider env var is removed, that provider section is cleaned from `opencla
 | `AWS_SECRET_ACCESS_KEY` | | AWS secret key. |
 | `AWS_REGION` | `us-east-1` | AWS region for Bedrock runtime endpoint. |
 | `AWS_SESSION_TOKEN` | | Optional session token for temporary credentials. |
-| `BEDROCK_PROVIDER_FILTER` | `anthropic` | Filter Bedrock model discovery by provider. |
+| `BEDROCK_PROVIDER_FILTER` | `["anthropic"]` | Filter Bedrock model discovery by provider (JSON array or comma-separated string). |
 
 ### Ollama (local models, no API key needed)
 

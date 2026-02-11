@@ -276,10 +276,20 @@ if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
     ],
   };
   ensure(config, "models");
+  // providerFilter must be an array; env var may be JSON array, CSV, or plain string
+  let providerFilter = ["anthropic"];
+  if (process.env.BEDROCK_PROVIDER_FILTER) {
+    try {
+      const parsed = JSON.parse(process.env.BEDROCK_PROVIDER_FILTER);
+      providerFilter = Array.isArray(parsed) ? parsed : [parsed];
+    } catch {
+      providerFilter = process.env.BEDROCK_PROVIDER_FILTER.split(",").map(s => s.trim());
+    }
+  }
   config.models.bedrockDiscovery = {
     enabled: true,
     region,
-    providerFilter: process.env.BEDROCK_PROVIDER_FILTER || "anthropic",
+    providerFilter,
     refreshInterval: 3600,
   };
 } else if (!hasCustomConfig && config.models?.providers?.["amazon-bedrock"]) {
