@@ -39,12 +39,10 @@ docker compose up -d
 ┌─────────────────────────────────────────────┐
 │  Docker container (coollabsio/openclaw)     │
 │                                             │
+│  Baked in: Linuxbrew, build-essential       │
 │  Persistent volume: /data                   │
 │    ├── .openclaw/      (state & config)     │
-│    ├── workspace/      (user projects)      │
-│    ├── bin/            (custom binaries)    │
-│    ├── homebrew/       (brew installs)      │
-│    └── init.d/         (startup scripts)    │
+│    └── workspace/      (user projects)      │
 │                                             │
 │  ┌──────────┐  :8080   ┌────────────────┐  │
 │  │  nginx    │ ──────→  │  openclaw      │  │
@@ -53,11 +51,10 @@ docker compose up -d
 │  └──────────┘          └────────────────┘  │
 │                                             │
 │  entrypoint.sh                              │
-│    1. set up persistent paths (bin, brew)   │
-│    2. run custom init script (optional)     │
-│    3. configure.js (env vars → json)        │
-│    4. nginx (background)                    │
-│    5. exec openclaw gateway                 │
+│    1. run custom init script (optional)     │
+│    2. configure.js (env vars → json)        │
+│    3. nginx (background)                    │
+│    4. exec openclaw gateway                 │
 └─────────────────────────────────────────────┘
 ```
 
@@ -321,42 +318,17 @@ If a channel env var is removed, that channel is cleaned from config on next sta
 |---|---|
 | `OPENCLAW_DOCKER_APT_PACKAGES` | Space-separated list of apt packages to install at container startup (e.g. `ffmpeg build-essential`). Packages are installed before openclaw starts. Reinstalled on each container restart. |
 
-### Persistent binaries and skills (optional)
+### Linuxbrew (baked into image)
+
+Linuxbrew is pre-installed in the base image at `/home/linuxbrew/.linuxbrew` along with `build-essential`, `git`, and other common build dependencies. Skills that require `brew` work out of the box.
+
+Note: packages installed via `brew install` at runtime are part of the container filesystem and do **not** persist across container rebuilds. To permanently add brew packages, customize `Dockerfile.base` or use `OPENCLAW_DOCKER_APT_PACKAGES` for apt-available equivalents.
+
+### Custom init script (optional)
 
 | Variable | Default | Description |
 |---|---|---|
-| `OPENCLAW_PERSISTENT_BIN` | `/data/bin` | Persistent bin directory, automatically added to PATH. Binaries placed here survive container restarts. |
-| `OPENCLAW_DOCKER_INIT_SCRIPT` | `/data/init.d/init.sh` | Custom init script that runs on every container start. Must be executable (`chmod +x`) and idempotent. |
-| `HOMEBREW_PREFIX` | `/data/homebrew` | Homebrew/Linuxbrew installation prefix. When brew is installed here, `bin/` and `sbin/` are added to PATH automatically. |
-
-OpenClaw skills often install binaries via Homebrew. By default, the entrypoint creates `/data/bin` and `/data/init.d`, and adds `/data/bin`, `/data/homebrew/bin`, and `/data/homebrew/sbin` to PATH. Everything under `/data` persists across container restarts.
-
-#### Example: install Homebrew on first run
-
-Create `/data/init.d/init.sh`:
-
-```bash
-#!/bin/bash
-# Install Homebrew to /data/homebrew if not already present
-if [ ! -x "/data/homebrew/bin/brew" ]; then
-  echo "Installing Homebrew to /data/homebrew..."
-  apt-get update && apt-get install -y --no-install-recommends \
-    build-essential curl file git procps
-  mkdir -p /data/homebrew
-  curl -fsSL https://github.com/Homebrew/brew/tarball/master | \
-    tar xz --strip-components=1 -C /data/homebrew
-  echo "Homebrew installed successfully"
-fi
-```
-
-Make it executable and restart:
-
-```bash
-docker exec openclaw chmod +x /data/init.d/init.sh
-docker restart openclaw
-```
-
-After that, `brew install <package>` installs to `/data/homebrew` and persists across restarts.
+| `OPENCLAW_DOCKER_INIT_SCRIPT` | *(none)* | Script that runs on every container start before openclaw starts. Must be executable and idempotent. |
 
 ### Port
 

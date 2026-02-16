@@ -43,7 +43,18 @@ RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    git \
+    build-essential \
+    file \
+    procps \
   && rm -rf /var/lib/apt/lists/*
+
+# Install Linuxbrew (skills use brew to install tool dependencies)
+RUN NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+ENV HOMEBREW_PREFIX="/home/linuxbrew/.linuxbrew" \
+    HOMEBREW_CELLAR="/home/linuxbrew/.linuxbrew/Cellar" \
+    HOMEBREW_REPOSITORY="/home/linuxbrew/.linuxbrew/Homebrew" \
+    PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:${PATH}"
 
 # Install under /opt/openclaw/app so that ../../ from dist/ lands at /opt/openclaw
 # which is where we place the symlinks. This avoids polluting / with project files.
