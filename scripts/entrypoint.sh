@@ -61,6 +61,13 @@ export OPENCLAW_WORKSPACE_DIR="$WORKSPACE_DIR"
 # (symlinks are detected as separate paths).
 export HOME="${STATE_DIR%/.openclaw}"
 
+# ── Run custom init script (if provided) ─────────────────────────────────────
+INIT_SCRIPT="${OPENCLAW_DOCKER_INIT_SCRIPT:-}"
+if [ -n "$INIT_SCRIPT" ] && [ -f "$INIT_SCRIPT" ] && [ -x "$INIT_SCRIPT" ]; then
+  echo "[entrypoint] running init script: $INIT_SCRIPT"
+  "$INIT_SCRIPT" || echo "[entrypoint] WARNING: init script exited with code $?"
+fi
+
 # ── Configure openclaw from env vars ─────────────────────────────────────────
 echo "[entrypoint] running configure..."
 node /app/scripts/configure.js

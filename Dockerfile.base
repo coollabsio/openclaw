@@ -43,7 +43,32 @@ RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    git \
+    build-essential \
+    file \
+    procps \
   && rm -rf /var/lib/apt/lists/*
+
+# Install Linuxbrew (installer refuses to run as root, so use a temp user)
+RUN useradd -m -s /bin/bash linuxbrew \
+  && mkdir -p /home/linuxbrew/.linuxbrew \
+  && chown -R linuxbrew:linuxbrew /home/linuxbrew
+USER linuxbrew
+RUN NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+USER root
+RUN chmod -R a+rx /home/linuxbrew/.linuxbrew
+ENV HOMEBREW_PREFIX="/home/linuxbrew/.linuxbrew" \
+    HOMEBREW_CELLAR="/home/linuxbrew/.linuxbrew/Cellar" \
+    HOMEBREW_REPOSITORY="/home/linuxbrew/.linuxbrew/Homebrew" \
+    PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:${PATH}"
+
+# Install Go (used by many skills)
+RUN curl -fsSL https://go.dev/dl/go1.24.1.linux-$(dpkg --print-architecture).tar.gz | tar -C /usr/local -xz
+ENV PATH="/usr/local/go/bin:${PATH}"
+
+# Install uv (fast Python package manager, used by Python-based skills)
+RUN curl -fsSL https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
 
 # Install under /opt/openclaw/app so that ../../ from dist/ lands at /opt/openclaw
 # which is where we place the symlinks. This avoids polluting / with project files.

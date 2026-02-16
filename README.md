@@ -39,6 +39,11 @@ docker compose up -d
 ┌─────────────────────────────────────────────┐
 │  Docker container (coollabsio/openclaw)     │
 │                                             │
+│  Baked in: Linuxbrew, Go, uv, build-essential│
+│  Persistent volume: /data                   │
+│    ├── .openclaw/      (state & config)     │
+│    └── workspace/      (user projects)      │
+│                                             │
 │  ┌──────────┐  :8080   ┌────────────────┐  │
 │  │  nginx    │ ──────→  │  openclaw      │  │
 │  │  (basic   │  proxy   │  gateway       │  │
@@ -46,9 +51,10 @@ docker compose up -d
 │  └──────────┘          └────────────────┘  │
 │                                             │
 │  entrypoint.sh                              │
-│    1. configure.js (env vars → json)        │
-│    2. nginx (background)                    │
-│    3. exec openclaw gateway                 │
+│    1. run custom init script (optional)     │
+│    2. configure.js (env vars → json)        │
+│    3. nginx (background)                    │
+│    4. exec openclaw gateway                 │
 └─────────────────────────────────────────────┘
 ```
 
@@ -311,6 +317,23 @@ If a channel env var is removed, that channel is cleaned from config on next sta
 | Variable | Description |
 |---|---|
 | `OPENCLAW_DOCKER_APT_PACKAGES` | Space-separated list of apt packages to install at container startup (e.g. `ffmpeg build-essential`). Packages are installed before openclaw starts. Reinstalled on each container restart. |
+
+### Linuxbrew (baked into image)
+
+The base image includes common skill dependencies baked in:
+
+- **Linuxbrew** — `/home/linuxbrew/.linuxbrew` — skills that need `brew` work out of the box
+- **Go** — `/usr/local/go` — for Go-based skills and tools
+- **uv** — fast Python package manager for Python-based skills
+- **build-essential**, **git**, **curl** — common build dependencies
+
+Note: packages installed at runtime (e.g. via `brew install`) are part of the container filesystem and do **not** persist across container rebuilds. To permanently add packages, customize `Dockerfile.base` or use `OPENCLAW_DOCKER_APT_PACKAGES` for apt-available equivalents.
+
+### Custom init script (optional)
+
+| Variable | Default | Description |
+|---|---|---|
+| `OPENCLAW_DOCKER_INIT_SCRIPT` | *(none)* | Script that runs on every container start before openclaw starts. Must be executable and idempotent. |
 
 ### Port
 
