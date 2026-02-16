@@ -61,6 +61,27 @@ export OPENCLAW_WORKSPACE_DIR="$WORKSPACE_DIR"
 # (symlinks are detected as separate paths).
 export HOME="${STATE_DIR%/.openclaw}"
 
+# ── Set up persistent bin directories ────────────────────────────────────────
+PERSISTENT_BIN="${OPENCLAW_PERSISTENT_BIN:-/data/bin}"
+HOMEBREW_PREFIX="${HOMEBREW_PREFIX:-/data/homebrew}"
+
+mkdir -p "$PERSISTENT_BIN" "/data/init.d"
+
+export PATH="$PERSISTENT_BIN:$HOMEBREW_PREFIX/bin:$HOMEBREW_PREFIX/sbin:$PATH"
+
+export HOMEBREW_PREFIX
+export HOMEBREW_CELLAR="$HOMEBREW_PREFIX/Cellar"
+export HOMEBREW_REPOSITORY="$HOMEBREW_PREFIX"
+
+echo "[entrypoint] persistent PATH: $PERSISTENT_BIN:$HOMEBREW_PREFIX/bin:$HOMEBREW_PREFIX/sbin"
+
+# ── Run custom init script (if provided) ─────────────────────────────────────
+INIT_SCRIPT="${OPENCLAW_DOCKER_INIT_SCRIPT:-/data/init.d/init.sh}"
+if [ -f "$INIT_SCRIPT" ] && [ -x "$INIT_SCRIPT" ]; then
+  echo "[entrypoint] running init script: $INIT_SCRIPT"
+  "$INIT_SCRIPT" || echo "[entrypoint] WARNING: init script exited with code $?"
+fi
+
 # ── Configure openclaw from env vars ─────────────────────────────────────────
 echo "[entrypoint] running configure..."
 node /app/scripts/configure.js

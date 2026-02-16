@@ -39,6 +39,13 @@ docker compose up -d
 ┌─────────────────────────────────────────────┐
 │  Docker container (coollabsio/openclaw)     │
 │                                             │
+│  Persistent volume: /data                   │
+│    ├── .openclaw/      (state & config)     │
+│    ├── workspace/      (user projects)      │
+│    ├── bin/            (custom binaries)    │
+│    ├── homebrew/       (brew installs)      │
+│    └── init.d/         (startup scripts)    │
+│                                             │
 │  ┌──────────┐  :8080   ┌────────────────┐  │
 │  │  nginx    │ ──────→  │  openclaw      │  │
 │  │  (basic   │  proxy   │  gateway       │  │
@@ -46,9 +53,11 @@ docker compose up -d
 │  └──────────┘          └────────────────┘  │
 │                                             │
 │  entrypoint.sh                              │
-│    1. configure.js (env vars → json)        │
-│    2. nginx (background)                    │
-│    3. exec openclaw gateway                 │
+│    1. set up persistent paths (bin, brew)   │
+│    2. run custom init script (optional)     │
+│    3. configure.js (env vars → json)        │
+│    4. nginx (background)                    │
+│    5. exec openclaw gateway                 │
 └─────────────────────────────────────────────┘
 ```
 
@@ -311,6 +320,43 @@ If a channel env var is removed, that channel is cleaned from config on next sta
 | Variable | Description |
 |---|---|
 | `OPENCLAW_DOCKER_APT_PACKAGES` | Space-separated list of apt packages to install at container startup (e.g. `ffmpeg build-essential`). Packages are installed before openclaw starts. Reinstalled on each container restart. |
+
+### Persistent binaries and skills (optional)
+
+| Variable | Default | Description |
+|---|---|---|
+| `OPENCLAW_PERSISTENT_BIN` | `/data/bin` | Persistent bin directory, automatically added to PATH. Binaries placed here survive container restarts. |
+| `OPENCLAW_DOCKER_INIT_SCRIPT` | `/data/init.d/init.sh` | Custom init script that runs on every container start. Must be executable (`chmod +x`) and idempotent. |
+| `HOMEBREW_PREFIX` | `/data/homebrew` | Homebrew/Linuxbrew installation prefix. When brew is installed here, `bin/` and `sbin/` are added to PATH automatically. |
+
+OpenClaw skills often install binaries via Homebrew. By default, the entrypoint creates `/data/bin` and `/data/init.d`, and adds `/data/bin`, `/data/homebrew/bin`, and `/data/homebrew/sbin` to PATH. Everything under `/data` persists across container restarts.
+
+#### Example: install Homebrew on first run
+
+Create `/data/init.d/init.sh`:
+
+```bash
+#!/bin/bash
+# Install Homebrew to /data/homebrew if not already present
+if [ ! -x "/data/homebrew/bin/brew" ]; then
+  echo "Installing Homebrew to /data/homebrew..."
+  apt-get update && apt-get install -y --no-install-recommends \
+    build-essential curl file git procps
+  mkdir -p /data/homebrew
+  curl -fsSL https://github.com/Homebrew/brew/tarball/master | \
+    tar xz --strip-components=1 -C /data/homebrew
+  echo "Homebrew installed successfully"
+fi
+```
+
+Make it executable and restart:
+
+```bash
+docker exec openclaw chmod +x /data/init.d/init.sh
+docker restart openclaw
+```
+
+After that, `brew install <package>` installs to `/data/homebrew` and persists across restarts.
 
 ### Port
 
