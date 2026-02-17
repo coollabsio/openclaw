@@ -63,9 +63,15 @@ export HOME="${STATE_DIR%/.openclaw}"
 
 # ── Run custom init script (if provided) ─────────────────────────────────────
 INIT_SCRIPT="${OPENCLAW_DOCKER_INIT_SCRIPT:-}"
-if [ -n "$INIT_SCRIPT" ] && [ -f "$INIT_SCRIPT" ] && [ -x "$INIT_SCRIPT" ]; then
-  echo "[entrypoint] running init script: $INIT_SCRIPT"
-  "$INIT_SCRIPT" || echo "[entrypoint] WARNING: init script exited with code $?"
+if [ -n "$INIT_SCRIPT" ]; then
+  if [ ! -f "$INIT_SCRIPT" ]; then
+    echo "[entrypoint] WARNING: init script not found: $INIT_SCRIPT"
+  else
+    # Auto-make executable — volume mounts often lose +x
+    chmod +x "$INIT_SCRIPT" 2>/dev/null || true
+    echo "[entrypoint] running init script: $INIT_SCRIPT"
+    "$INIT_SCRIPT" || echo "[entrypoint] WARNING: init script exited with code $?"
+  fi
 fi
 
 # ── Configure openclaw from env vars ─────────────────────────────────────────
