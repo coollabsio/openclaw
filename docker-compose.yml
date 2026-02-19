@@ -19,6 +19,8 @@ services:
       # Hooks (optional)
       # - HOOKS_ENABLED=true
       # - HOOKS_TOKEN=my-hook-secret
+    networks:
+        - openclaw-net
     volumes:
       - openclaw-data:/data
       # Optional: custom JSON config for complex settings (groups, plugins, etc.)
@@ -35,11 +37,17 @@ services:
       - PGID=1000
       - TZ=Etc/UTC
       - CHROME_CLI=--remote-debugging-port=9222
+    networks:
+        - openclaw-net
     volumes:
       - browser-data:/config
     shm_size: 2g
     restart: unless-stopped
 
+networks:
+    openclaw-net:
+      driver: bridge
+      
 volumes:
   openclaw-data:
   browser-data:
