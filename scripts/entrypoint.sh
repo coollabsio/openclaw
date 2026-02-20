@@ -116,7 +116,7 @@ HOOKS_LOCATION_BLOCK=""
 if [ -n "$HOOKS_PATH" ]; then
   HOOKS_LOCATION_BLOCK="location ${HOOKS_PATH} {
         proxy_pass http://127.0.0.1:${GATEWAY_PORT};
-        proxy_set_header Authorization \"Bearer ${GATEWAY_TOKEN}\";
+        proxy_set_header Authorization \\\$http_authorization;
 
         proxy_set_header Host \\\$host;
         proxy_set_header X-Real-IP \\\$remote_addr;
