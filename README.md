@@ -117,11 +117,12 @@ Triggers: `schedule: '0 */6 * * *'` + `workflow_dispatch` (version, force_rebuil
 | `ZAI_API_KEY` | ZAI API key. Configures GLM models. |
 | `AI_GATEWAY_API_KEY` | Vercel AI Gateway API key. |
 | `OPENCODE_API_KEY` | OpenCode API key. Also accepted as `OPENCODE_ZEN_API_KEY`. |
+| `LITELLM_API_KEY` | LiteLLM API key (OpenAI-compatible). Default base URL is `http://localhost:4000` (override with `LITELLM_BASE_URL`). |
 | `SYNTHETIC_API_KEY` | Synthetic API key (Anthropic-compatible). |
 | `COPILOT_GITHUB_TOKEN` | GitHub Copilot token. Configures Claude models via GitHub. |
 | `XIAOMI_API_KEY` | Xiaomi MiMo API key (Anthropic-compatible). Configures MiMo v2 Flash. |
 
-Multiple providers can be set simultaneously. Priority for primary model: Anthropic > OpenAI > OpenRouter > Gemini > OpenCode > GitHub Copilot > xAI > Groq > Mistral > Cerebras > Venice > Moonshot > Kimi > MiniMax > Synthetic > ZAI > AI Gateway > Xiaomi > Bedrock > Ollama.
+Multiple providers can be set simultaneously. Priority for primary model: Anthropic > OpenAI > OpenRouter > Gemini > OpenCode > GitHub Copilot > xAI > Groq > Mistral > Cerebras > Venice > Moonshot > Kimi > MiniMax > Synthetic > ZAI > AI Gateway > Xiaomi > Bedrock > LiteLLM > Ollama.
 
 If a provider env var is removed, that provider section is cleaned from `openclaw.json` on next start.
 
@@ -308,6 +309,7 @@ If a channel env var is removed, that channel is cleaned from config on next sta
 | Variable | Description |
 |---|---|
 | `AI_GATEWAY_BASE_URL` | Custom base URL for AI gateway (e.g. Cloudflare AI Gateway). Applied to the matching provider based on URL suffix. |
+| `LITELLM_BASE_URL` | Base URL for LiteLLM Proxy (default: `http://localhost:4000`). |
 | `ANTHROPIC_BASE_URL` | Override Anthropic API base URL specifically. |
 | `MOONSHOT_BASE_URL` | Override Moonshot API base URL. Default: `https://api.moonshot.ai/v1`. |
 | `KIMI_BASE_URL` | Override Kimi Coding API base URL. Default: `https://api.moonshot.ai/anthropic`. |
