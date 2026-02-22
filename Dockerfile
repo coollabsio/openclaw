@@ -16,6 +16,12 @@ RUN rm -f /etc/nginx/sites-enabled/default
 COPY scripts/ /app/scripts/
 RUN chmod +x /app/scripts/*.sh
 
+ENV NPM_CONFIG_PREFIX="/data/npm-global" \
+    UV_TOOL_DIR="/data/uv/tools" \
+    UV_CACHE_DIR="/data/uv/cache" \
+    GOPATH="/data/go" \
+    PATH="/data/npm-global/bin:/data/uv/tools/bin:/data/go/bin:${PATH}"
+
 ENV PORT=8080
 EXPOSE 8080
 
