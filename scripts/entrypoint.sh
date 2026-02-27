@@ -305,17 +305,7 @@ rm -f "$STATE_DIR/gateway.lock" 2>/dev/null || true
 # ── Start openclaw gateway ───────────────────────────────────────────────────
 echo "[entrypoint] starting openclaw gateway on port $GATEWAY_PORT..."
 
-GATEWAY_ARGS=(
-  gateway
-  run
-  --port "$GATEWAY_PORT"
-  --verbose
-  --allow-unconfigured
-  --bind "${OPENCLAW_GATEWAY_BIND:-loopback}"
-)
-
-GATEWAY_ARGS+=(--token "$GATEWAY_TOKEN")
-
 # cwd must be the app root so the gateway finds dist/control-ui/ assets
+# "gateway run" = foreground mode; all config comes from openclaw.json
 cd /opt/openclaw/app
-exec openclaw "${GATEWAY_ARGS[@]}"
+exec openclaw gateway run
