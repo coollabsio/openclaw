@@ -320,6 +320,26 @@ if (ollamaUrl) {
   removeProvider("ollama", "Ollama", "OLLAMA_BASE_URL");
 }
 
+// LiteLLM (OpenAI-compatible)
+const litellmKey = (process.env.LITELLM_API_KEY || "").trim();
+if (litellmKey) {
+  console.log("[configure] configuring LiteLLM provider");
+  ensure(config, "models", "providers");
+  const litellmBaseUrl = (process.env.LITELLM_BASE_URL || "http://localhost:4000")
+    .trim()
+    .replace(/\/+$/, "");
+  config.models.providers.litellm = {
+    api: "openai-completions",
+    apiKey: litellmKey,
+    baseUrl: litellmBaseUrl,
+    models: [
+      { id: "claude-opus-4-6", name: "Claude Opus 4.6 (LiteLLM)", contextWindow: 200000 },
+    ],
+  };
+} else {
+  removeProvider("litellm", "LiteLLM", "LITELLM_API_KEY");
+}
+
 // ── Primary model selection (first available provider wins) ─────────────────
 const primaryCandidates = [
   [process.env.ANTHROPIC_API_KEY,      "anthropic/claude-opus-4-5-20251101"],
@@ -341,6 +361,7 @@ const primaryCandidates = [
   [process.env.AI_GATEWAY_API_KEY,     "vercel-ai-gateway/anthropic/claude-opus-4.5"],
   [process.env.XIAOMI_API_KEY,         "xiaomi/mimo-v2-flash"],
   [process.env.AWS_ACCESS_KEY_ID,      "amazon-bedrock/anthropic.claude-opus-4-5-20251101-v1:0"],
+  [litellmKey,                          "litellm/claude-opus-4-6"],
   [ollamaUrl,                          "ollama/llama3.3"],
 ];
 if (process.env.OPENCLAW_PRIMARY_MODEL) {
@@ -616,6 +637,7 @@ const hasProvider =
   !!opencodeKey ||
   !!(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) ||
   !!ollamaUrl ||
+  !!litellmKey ||
   // Custom proxy providers also need env var keys
   !!process.env.VENICE_API_KEY || !!process.env.MINIMAX_API_KEY ||
   !!process.env.MOONSHOT_API_KEY || !!process.env.KIMI_API_KEY ||
@@ -628,7 +650,7 @@ if (!hasProvider) {
   console.error("[configure]   XAI_API_KEY, GROQ_API_KEY, MISTRAL_API_KEY, CEREBRAS_API_KEY, ZAI_API_KEY,");
   console.error("[configure]   AI_GATEWAY_API_KEY, OPENCODE_API_KEY, COPILOT_GITHUB_TOKEN, VENICE_API_KEY,");
   console.error("[configure]   MOONSHOT_API_KEY, KIMI_API_KEY, MINIMAX_API_KEY, SYNTHETIC_API_KEY, XIAOMI_API_KEY,");
-  console.error("[configure]   AWS_ACCESS_KEY_ID+AWS_SECRET_ACCESS_KEY (Bedrock), or OLLAMA_BASE_URL (local)");
+  console.error("[configure]   LITELLM_API_KEY, AWS_ACCESS_KEY_ID+AWS_SECRET_ACCESS_KEY (Bedrock), or OLLAMA_BASE_URL (local)");
   process.exit(1);
 }
 
