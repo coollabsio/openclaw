@@ -570,6 +570,36 @@ if (process.env.WHATSAPP_ENABLED === "true" || process.env.WHATSAPP_ENABLED === 
   console.log("[configure] WhatsApp channel configured (from custom JSON)");
 }
 
+// Campfire (37signals self-hosted chat — webhook-based)
+if (process.env.CAMPFIRE_BOT_KEY && process.env.CAMPFIRE_BASE_URL) {
+  console.log("[configure] configuring Campfire channel (from env)");
+  ensure(config, "plugins", "entries", "campfire");
+  config.plugins.entries.campfire.enabled = true;
+  ensure(config, "channels", "campfire");
+  config.channels.campfire.enabled = true;
+  config.channels.campfire.botKey = process.env.CAMPFIRE_BOT_KEY;
+  config.channels.campfire.baseUrl = process.env.CAMPFIRE_BASE_URL.replace(/\/+$/, "");
+
+  // strings
+  if (process.env.CAMPFIRE_WEBHOOK_PATH)   config.channels.campfire.webhookPath = process.env.CAMPFIRE_WEBHOOK_PATH;
+  if (process.env.CAMPFIRE_GROUP_POLICY)   config.channels.campfire.groupPolicy = process.env.CAMPFIRE_GROUP_POLICY;
+
+  // csv → array (user IDs or names)
+  if (process.env.CAMPFIRE_GROUP_ALLOW_FROM) {
+    config.channels.campfire.groupAllowFrom = process.env.CAMPFIRE_GROUP_ALLOW_FROM.split(",").map(s => {
+      const trimmed = s.trim();
+      const num = Number(trimmed);
+      return Number.isInteger(num) ? num : trimmed;
+    });
+  }
+} else if (config.channels?.campfire) {
+  console.log("[configure] Campfire channel configured (from custom JSON)");
+  ensure(config, "plugins", "entries", "campfire");
+  if (config.plugins.entries.campfire.enabled === undefined) {
+    config.plugins.entries.campfire.enabled = true;
+  }
+}
+
 // Clean up empty channels object (from previous config versions)
 if (config.channels && Object.keys(config.channels).length === 0) {
   delete config.channels;
