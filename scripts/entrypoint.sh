@@ -8,6 +8,52 @@ GATEWAY_PORT="${OPENCLAW_GATEWAY_PORT:-18789}"
 echo "[entrypoint] state dir: $STATE_DIR"
 echo "[entrypoint] workspace dir: $WORKSPACE_DIR"
 
+# ── Setup Persistent Storage for Tools ────────────────────────────────────────
+
+echo "[entrypoint] setting up persistent tool storage in /data..."
+mkdir -p "$NPM_CONFIG_PREFIX/bin" "$UV_TOOL_DIR/bin" "$UV_CACHE_DIR" "$GOPATH/bin"
+
+# Linuxbrew persistence and symlinking
+BREW_PERSIST_DIR="/data/linuxbrew"
+if [ ! -d "$BREW_PERSIST_DIR" ]; then
+    echo "[entrypoint] Initializing persistent linuxbrew storage..."
+    mkdir -p "$BREW_PERSIST_DIR"
+    if [ -d "/home/linuxbrew/.linuxbrew" ] && [ ! -L "/home/linuxbrew/.linuxbrew" ]; then
+        cp -a /home/linuxbrew/.linuxbrew/* "$BREW_PERSIST_DIR/" || true
+        cp -a /home/linuxbrew/.linuxbrew/.[!.]* "$BREW_PERSIST_DIR/" 2>/dev/null || true
+    fi
+    chown -R linuxbrew:linuxbrew "$BREW_PERSIST_DIR"
+fi
+
+if [ ! -L "/home/linuxbrew/.linuxbrew" ]; then
+    rm -rf /home/linuxbrew/.linuxbrew
+    ln -s "$BREW_PERSIST_DIR" /home/linuxbrew/.linuxbrew
+    chown -h linuxbrew:linuxbrew /home/linuxbrew/.linuxbrew
+fi
+
+# Ensure tool paths survive login-shell PATH reset (/etc/profile overwrites PATH)
+cat << 'EOF' > /etc/profile.d/custom-tools.sh
+export NPM_CONFIG_PREFIX="/data/npm-global"
+export UV_TOOL_DIR="/data/uv/tools"
+export UV_CACHE_DIR="/data/uv/cache"
+export GOPATH="/data/go"
+export PATH="/data/npm-global/bin:/data/uv/tools/bin:/data/go/bin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/usr/local/go/bin:$PATH"
+EOF
+chmod +x /etc/profile.d/custom-tools.sh
+
+# Create a wrapper for brew to drop root privileges
+cat << 'EOF' > "$NPM_CONFIG_PREFIX/bin/brew"
+#!/bin/bash
+if [ "$(id -u)" = "0" ]; then
+    export HOME=/home/linuxbrew
+    export USER=linuxbrew
+    exec runuser -u linuxbrew -- /home/linuxbrew/.linuxbrew/bin/brew "$@"
+else
+    exec /home/linuxbrew/.linuxbrew/bin/brew "$@"
+fi
+EOF
+chmod +x "$NPM_CONFIG_PREFIX/bin/brew"
+
 # ── Install extra apt packages (if requested) ────────────────────────────────
 if [ -n "${OPENCLAW_DOCKER_APT_PACKAGES:-}" ]; then
   echo "[entrypoint] installing extra packages: $OPENCLAW_DOCKER_APT_PACKAGES"
@@ -117,7 +163,7 @@ HOOKS_LOCATION_BLOCK=""
 if [ -n "$HOOKS_PATH" ]; then
   HOOKS_LOCATION_BLOCK="location ${HOOKS_PATH} {
         proxy_pass http://127.0.0.1:${GATEWAY_PORT};
-        proxy_set_header Authorization \"Bearer ${GATEWAY_TOKEN}\";
+        proxy_set_header Authorization \\\$http_authorization;
 
         proxy_set_header Host \\\$host;
         proxy_set_header X-Real-IP \\\$remote_addr;
@@ -260,16 +306,7 @@ rm -f "$STATE_DIR/gateway.lock" 2>/dev/null || true
 # ── Start openclaw gateway ───────────────────────────────────────────────────
 echo "[entrypoint] starting openclaw gateway on port $GATEWAY_PORT..."
 
-GATEWAY_ARGS=(
-  gateway
-  --port "$GATEWAY_PORT"
-  --verbose
-  --allow-unconfigured
-  --bind "${OPENCLAW_GATEWAY_BIND:-loopback}"
-)
-
-GATEWAY_ARGS+=(--token "$GATEWAY_TOKEN")
-
 # cwd must be the app root so the gateway finds dist/control-ui/ assets
+# "gateway run" = foreground mode; all config comes from openclaw.json
 cd /opt/openclaw/app
-exec openclaw "${GATEWAY_ARGS[@]}"
+exec openclaw gateway run

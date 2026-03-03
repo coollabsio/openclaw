@@ -100,6 +100,11 @@ if (config.gateway.controlUi.enabled === undefined) {
   config.gateway.controlUi.enabled = true;
 }
 
+// Bind address (all gateway config comes from openclaw.json; "gateway run" reads it)
+if (config.gateway.bind === undefined) {
+  config.gateway.bind = process.env.OPENCLAW_GATEWAY_BIND || "loopback";
+}
+
 // ── Agents defaults ─────────────────────────────────────────────────────────
 
 ensure(config, "agents", "defaults");
@@ -552,7 +557,6 @@ if (process.env.WHATSAPP_ENABLED === "true" || process.env.WHATSAPP_ENABLED === 
   console.log("[configure] configuring WhatsApp channel (from env)");
   ensure(config, "channels");
   const wa = config.channels.whatsapp = {}; // full overwrite — env vars are authoritative
-  wa.enabled = true;
 
   // strings
   if (process.env.WHATSAPP_DM_POLICY)        wa.dmPolicy = process.env.WHATSAPP_DM_POLICY;
