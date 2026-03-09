@@ -122,7 +122,7 @@ fi
 
 # ── Configure openclaw from env vars ─────────────────────────────────────────
 echo "[entrypoint] running configure..."
-node /app/scripts/configure.js
+node /app/scripts/configure.mjs
 chmod 600 "$STATE_DIR/openclaw.json"
 
 # ── Auto-fix doctor suggestions (e.g. enable configured channels) ─────────

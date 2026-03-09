@@ -4,8 +4,8 @@
 // with env vars overriding on top.
 // No npm dependencies — uses only Node built-ins.
 
-const fs = require("fs");
-const path = require("path");
+import fs from "node:fs";
+import path from "node:path";
 
 const STATE_DIR = (process.env.OPENCLAW_STATE_DIR || "/data/.openclaw").replace(/\/+$/, "");
 const WORKSPACE_DIR = (process.env.OPENCLAW_WORKSPACE_DIR || "/data/workspace").replace(/\/+$/, "");
@@ -33,6 +33,16 @@ function deepMerge(target, source) {
     }
   }
   return target;
+}
+
+// Async JSON fetch with timeout
+async function fetchJson(url, timeoutMs = 5000) {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    return await res.json();
+  } catch {
+    return null;
+  }
 }
 
 // Load config: custom JSON (base) → existing persisted config → env vars (on top)
@@ -305,16 +315,31 @@ if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
 
 // Ollama (local, no API key needed)
 const ollamaUrl = (process.env.OLLAMA_BASE_URL || "").replace(/\/+$/, "");
+let ollamaModels = [];
+
 if (ollamaUrl) {
   console.log("[configure] configuring Ollama provider");
   ensure(config, "models", "providers");
   const base = ollamaUrl.endsWith("/v1") ? ollamaUrl : `${ollamaUrl}/v1`;
+
+  // Fetch available models from Ollama API
+  const tagsData = await fetchJson(`${ollamaUrl}/api/tags`);
+  if (tagsData && Array.isArray(tagsData.models) && tagsData.models.length > 0) {
+    ollamaModels = tagsData.models.map(m => ({
+      id: m.name,
+      name: m.name,
+      contextWindow: 128000,
+    }));
+    console.log(`[configure] Ollama: discovered ${ollamaModels.length} model(s): ${ollamaModels.map(m => m.id).join(", ")}`);
+  } else {
+    console.warn("[configure] Ollama: could not fetch models from API, using fallback");
+    ollamaModels = [{ id: "llama3.3", name: "Llama 3.3", contextWindow: 128000 }];
+  }
+
   config.models.providers.ollama = {
     api: "openai-completions",
     baseUrl: base,
-    models: [
-      { id: "llama3.3", name: "Llama 3.3", contextWindow: 128000 },
-    ],
+    models: ollamaModels,
   };
 } else {
   removeProvider("ollama", "Ollama", "OLLAMA_BASE_URL");
@@ -341,7 +366,7 @@ const primaryCandidates = [
   [process.env.AI_GATEWAY_API_KEY,     "vercel-ai-gateway/anthropic/claude-opus-4.5"],
   [process.env.XIAOMI_API_KEY,         "xiaomi/mimo-v2-flash"],
   [process.env.AWS_ACCESS_KEY_ID,      "amazon-bedrock/anthropic.claude-opus-4-5-20251101-v1:0"],
-  [ollamaUrl,                          "ollama/llama3.3"],
+  [ollamaModels.length > 0 ? ollamaUrl : null, ollamaModels.length > 0 ? `ollama/${ollamaModels[0].id}` : null],
 ];
 if (process.env.OPENCLAW_PRIMARY_MODEL) {
   // Explicit env var override
