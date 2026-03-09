@@ -339,6 +339,7 @@ if (ollamaUrl) {
   config.models.providers.ollama = {
     api: "openai-completions",
     baseUrl: base,
+    apiKey: "__OPENCLAW_REDACTED__",
     models: ollamaModels,
   };
 } else {
