@@ -11,6 +11,7 @@ docker run -d \
   -e ANTHROPIC_API_KEY=sk-ant-... \
   -e AUTH_PASSWORD=changeme \
   -e OPENCLAW_GATEWAY_TOKEN=my-secret-token \
+  -e OPENCLAW_ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000 \
   -v openclaw-data:/data \
   coollabsio/openclaw:latest
 ```
@@ -18,6 +19,7 @@ docker run -d \
 - `ANTHROPIC_API_KEY` — any [supported provider key](#ai-providers-at-least-one-required) works (OpenAI, Gemini, etc.)
 - `AUTH_PASSWORD` — protects the web UI with HTTP basic auth (user defaults to `admin`, override with `AUTH_USERNAME`)
 - `OPENCLAW_GATEWAY_TOKEN` — internal API token; auto-generated if omitted, but set it explicitly for stable API access
+- `OPENCLAW_ALLOWED_ORIGINS` — **(Required)** Set to `http://localhost:5173` or your frontend origin to enable CORS for the Control UI
 - `/data` — persists state, config, and workspace across restarts
 
 ### Full Setup (docker-compose)
@@ -172,6 +174,22 @@ If a provider env var is removed, that provider section is cleaned from `opencla
 | `OPENCLAW_CONFIG_PATH` | `<STATE_DIR>/openclaw.json` | Override path to the config file. |
 | `OPENCLAW_CUSTOM_CONFIG` | `/app/config/openclaw.json` | Path to a user-provided custom JSON config. Env vars override on top. |
 
+### CORS / Allowed Origins (optional)
+
+Configure Cross-Origin Resource Sharing for the Control UI. Required when accessing the gateway from a different origin (e.g., a custom web app or local dev server).
+
+| Variable | Description |
+|---|---|
+| `OPENCLAW_ALLOWED_ORIGINS` | Comma-separated list or JSON array of allowed origins. Example: `http://localhost:5173,https://app.example.com` or `["http://localhost:5173"]`. |
+
+```bash
+# Allow specific origins
+OPENCLAW_ALLOWED_ORIGINS=http://localhost:5173,https://app.example.com
+
+# Or as JSON array
+OPENCLAW_ALLOWED_ORIGINS='["http://localhost:5173","https://app.example.com"]'
+```
+
 ### Hooks (webhook automation, optional)
 
 | Variable | Default | Description |
@@ -207,6 +225,8 @@ For sites requiring authentication, use `kasmweb/chrome` so you can log in manua
 Mount a persistent volume at the sidecar's profile directory (`/home/kasm-user`) so cookies and sessions survive container restarts. The sidecar may need `CHROME_ARGS=--remote-debugging-port=9222 --remote-debugging-address=0.0.0.0` to expose CDP. Docs: https://docs.openclaw.ai/tools/browser-login
 
 ### Channels (optional)
+
+> **Note:** Use these dedicated env vars for standard channel configuration. For settings not covered here, use [Dot-Notation Config](#dot-notation-config-openclaw__) as a fallback.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -341,6 +361,44 @@ Note: packages installed at runtime (e.g. via `brew install`) are part of the co
 |---|---|---|
 | `PORT` | `8080` | External port nginx listens on. |
 
+### Dot-Notation Config (OPENCLAW__*) — **Fallback for Customization**
+
+> **Recommended:** Use the dedicated env vars (e.g., `TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN`) for standard configuration. Use dot-notation (`OPENCLAW__*`) only when you need to customize settings not covered by the dedicated vars or for quick one-off changes.
+
+| Variable | Description |
+|---|---|
+| `OPENCLAW__<path>__<to>__<key>` | Set any config value using dot notation. Use `[]` suffix for arrays. |
+
+```bash
+# Use dedicated env vars for standard config:
+TELEGRAM_BOT_TOKEN=your-token
+TELEGRAM_TEXT_CHUNK_LIMIT=4000
+
+# Use dot-notation ONLY for small customizations not covered above:
+OPENCLAW__channels__telegram__customSetting=value
+OPENCLAW__channels__discord__customSetting=value
+```
+
+**Auto-typing:** `true`/`false` → boolean, integers → number, floats → number, otherwise string. Use `[]` suffix for arrays (comma-separated).
+
+### JSON Config via Env Var (OPENCLAW_CONFIG_JSON)
+
+Pass partial or full config as a JSON string. This is parsed **after** dot-notation vars, so it can override them. Invalid JSON will cause the container to exit with an error.
+
+| Variable | Description |
+|---|---|
+| `OPENCLAW_CONFIG_JSON` | JSON object merged into config. Must be valid JSON. |
+
+```bash
+# Partial config override
+OPENCLAW_CONFIG_JSON='{"gateway":{"port":8080},"channels":{"telegram":{"enabled":true}}}'
+
+# In docker-compose (use quotes carefully)
+environment:
+  OPENCLAW_CONFIG_JSON: '{"gateway":{"port":8080}}'
+```
+
+**Validation:** If JSON is invalid, the container exits with error before starting. Use `docker logs` to see the parse error.
 
 ### Coolify-specific (auto-set by Coolify)
 
