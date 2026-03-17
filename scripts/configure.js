@@ -91,14 +91,10 @@ if (token) {
   config.gateway.auth.token = token;
 }
 
-// Allow control UI without device pairing (only set defaults, don't overwrite)
+// Allow control UI without device pairing — always override (nginx basic auth protects the endpoint)
 ensure(config, "gateway", "controlUi");
-if (config.gateway.controlUi.allowInsecureAuth === undefined) {
-  config.gateway.controlUi.allowInsecureAuth = true;
-}
-if (config.gateway.controlUi.enabled === undefined) {
-  config.gateway.controlUi.enabled = true;
-}
+config.gateway.controlUi.allowInsecureAuth = true;
+config.gateway.controlUi.enabled = true;
 
 // CSV → array of allowed origins (e.g. "https://claw.designflow.app,https://other.domain.com")
 if (process.env.GATEWAY_ALLOWED_ORIGINS) {
