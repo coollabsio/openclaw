@@ -1,5 +1,17 @@
 # Moltbot — OpenClaw Docker Build
 
+## Gateway env vars
+
+### `GATEWAY_ALLOWED_ORIGINS` (CSV → array)
+
+Maps to `gateway.controlUi.allowedOrigins`. Allows the Control UI to be accessed from the listed origins (e.g. when behind a reverse proxy or Cloudflare Tunnel).
+
+Example: `GATEWAY_ALLOWED_ORIGINS=https://claw.designflow.app`
+
+Multiple origins: `GATEWAY_ALLOWED_ORIGINS=https://claw.designflow.app,https://other.domain.com`
+
+---
+
 ## Channel env var pattern
 
 Each channel in `scripts/configure.js` maps `CHANNEL_*` env vars → `channels.<name>.*` in `openclaw.json`.

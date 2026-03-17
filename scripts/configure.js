@@ -100,6 +100,15 @@ if (config.gateway.controlUi.enabled === undefined) {
   config.gateway.controlUi.enabled = true;
 }
 
+// CSV → array of allowed origins (e.g. "https://claw.designflow.app,https://other.domain.com")
+if (process.env.GATEWAY_ALLOWED_ORIGINS) {
+  config.gateway.controlUi.allowedOrigins = process.env.GATEWAY_ALLOWED_ORIGINS
+    .split(",")
+    .map(s => s.trim())
+    .filter(Boolean);
+  console.log("[configure] allowedOrigins:", config.gateway.controlUi.allowedOrigins);
+}
+
 // Bind address (all gateway config comes from openclaw.json; "gateway run" reads it)
 if (config.gateway.bind === undefined) {
   config.gateway.bind = process.env.OPENCLAW_GATEWAY_BIND || "loopback";
