@@ -23,6 +23,7 @@ services:
       - openclaw-data:/data
       # Optional: custom JSON config for complex settings (groups, plugins, etc.)
       # - ./my-openclaw.json:/app/config/openclaw.json
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - browser
     restart: unless-stopped
