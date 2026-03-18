@@ -131,22 +131,6 @@ rm -f "$STATE_DIR/openclaw.json" 2>/dev/null || true
 echo "[entrypoint] running configure..."
 node /app/scripts/configure.js
 
-# Remove any experimental/invalid fields that may have been persisted to the
-# state volume by a previous deployment.
-node -e "
-  const fs = require('fs');
-  const file = process.env.OPENCLAW_STATE_DIR + '/openclaw.json';
-  try {
-    const c = JSON.parse(fs.readFileSync(file, 'utf8'));
-    let changed = false;
-    if (c?.agents?.defaults?.model?.list !== undefined) {
-      delete c.agents.defaults.model.list;
-      changed = true;
-      console.log('[entrypoint] removed agents.defaults.model.list from persisted config');
-    }
-    if (changed) fs.writeFileSync(file, JSON.stringify(c, null, 2));
-  } catch {}
-" 2>/dev/null || true
 
 chmod 600 "$STATE_DIR/openclaw.json"
 

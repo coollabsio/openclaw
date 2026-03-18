@@ -376,6 +376,16 @@ if (process.env.OPENCLAW_PRIMARY_MODEL) {
   }
 }
 
+// Build model.list from all active providers so the Agents → Overview
+// "Primary model" dropdown is populated instead of showing "No configured models".
+const availableModels = primaryCandidates
+  .filter(([key]) => !!key)
+  .map(([, model]) => model);
+if (availableModels.length > 0) {
+  config.agents.defaults.model.list = availableModels;
+  console.log(`[configure] model list (${availableModels.length}): ${availableModels.join(", ")}`);
+}
+
 // ── Deepgram (audio transcription) ──────────────────────────────────────────
 if (process.env.DEEPGRAM_API_KEY) {
   console.log("[configure] configuring Deepgram transcription (from env)");
