@@ -306,20 +306,23 @@ if [ -n "${CLAWDTALK_API_KEY:-}" ]; then
       | tar -xz --strip-components=1 -C "$CLAWDTALK_DIR"
   fi
 
-  # Write skill-config.json with expanded API key value
-  printf '{\n  "api_key": "%s",\n  "server": "https://clawdtalk.com"\n}\n' \
-    "$CLAWDTALK_API_KEY" > "$CLAWDTALK_DIR/skill-config.json"
-  chmod 600 "$CLAWDTALK_DIR/skill-config.json"
+  # Write skill-config.json into scripts/ (where ws-client.js lives)
+  mkdir -p "$CLAWDTALK_DIR/scripts"
+  printf '{\n  "api_key": "%s",\n  "server": "https://clawdtalk.com",\n  "gateway_url": "http://127.0.0.1:%s",\n  "gateway_token": "%s",\n  "agent_id": "main"\n}\n' \
+    "$CLAWDTALK_API_KEY" "$GATEWAY_PORT" "$GATEWAY_TOKEN" \
+    > "$CLAWDTALK_DIR/scripts/skill-config.json"
+  chmod 600 "$CLAWDTALK_DIR/scripts/skill-config.json"
 
-  # Install Node.js dependencies
+  # Install Node.js dependencies (package.json is at repo root)
   if [ -f "$CLAWDTALK_DIR/package.json" ] && [ ! -d "$CLAWDTALK_DIR/node_modules/ws" ]; then
     echo "[entrypoint] installing ClawdTalk dependencies..."
     npm install --production --prefix "$CLAWDTALK_DIR" 2>&1 | tail -3
   fi
 
-  # Start WebSocket client in background (connects to ClawdTalk, forwards calls to gateway)
+  # Start WebSocket client in background
+  # ws-client.js lives in scripts/ and reads skill-config.json from its own dir
   echo "[entrypoint] starting ClawdTalk WebSocket client..."
-  cd "$CLAWDTALK_DIR"
+  cd "$CLAWDTALK_DIR/scripts"
   nohup node ws-client.js >> "$STATE_DIR/clawdtalk.log" 2>&1 &
   echo "[entrypoint] ClawdTalk started (pid: $!, log: $STATE_DIR/clawdtalk.log)"
   cd /opt/openclaw/app
