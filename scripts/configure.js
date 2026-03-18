@@ -92,8 +92,11 @@ if (token) {
 }
 
 // Allow control UI without device pairing — always override (nginx basic auth protects the endpoint)
+// dangerouslyDisableDeviceAuth works around a 2026.2.21 regression where allowInsecureAuth
+// stopped bypassing pairing for reverse-proxy deployments (openclaw issue #22908)
 ensure(config, "gateway", "controlUi");
 config.gateway.controlUi.allowInsecureAuth = true;
+config.gateway.controlUi.dangerouslyDisableDeviceAuth = true;
 config.gateway.controlUi.enabled = true;
 
 // CSV → array of allowed origins (e.g. "https://claw.designflow.app,https://other.domain.com")
