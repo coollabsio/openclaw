@@ -168,6 +168,18 @@ echo "[entrypoint] running openclaw doctor --fix..."
 cd /opt/openclaw/app
 openclaw doctor --fix 2>&1 || true
 
+# ── One-time pairing approvals ────────────────────────────────────────────────
+# Set OPENCLAW_PAIR_APPROVE=<channel>:<code> to approve a pairing on startup.
+# Example: OPENCLAW_PAIR_APPROVE=telegram:CRSJTY6S
+# The env var is consumed once; remove it from Coolify after the next redeploy.
+if [ -n "${OPENCLAW_PAIR_APPROVE:-}" ]; then
+  PAIR_CHANNEL=$(echo "$OPENCLAW_PAIR_APPROVE" | cut -d: -f1)
+  PAIR_CODE=$(echo "$OPENCLAW_PAIR_APPROVE" | cut -d: -f2)
+  echo "[entrypoint] approving pairing: $PAIR_CHANNEL $PAIR_CODE"
+  cd /opt/openclaw/app
+  openclaw pairing approve "$PAIR_CHANNEL" "$PAIR_CODE" 2>&1 || true
+fi
+
 # ── Read hooks path from generated config (if hooks enabled) ─────────────────
 HOOKS_PATH=""
 HOOKS_PATH=$(node -e "
