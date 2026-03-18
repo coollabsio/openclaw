@@ -361,8 +361,7 @@ const primaryCandidates = [
   [ollamaUrl,                          "ollama/llama3.3"],
 ];
 if (process.env.OPENCLAW_PRIMARY_MODEL) {
-  // Explicit env var override — also sets the picker to single-model mode,
-  // so only use this when you intentionally want to restrict the model list.
+  // Explicit env var override.
   config.agents.defaults.model.primary = process.env.OPENCLAW_PRIMARY_MODEL;
   console.log(`[configure] primary model (override): ${process.env.OPENCLAW_PRIMARY_MODEL}`);
 } else {
@@ -373,6 +372,61 @@ if (process.env.OPENCLAW_PRIMARY_MODEL) {
   if (config.agents?.defaults?.model?.primary) {
     delete config.agents.defaults.model.primary;
     console.log("[configure] cleared agents.defaults.model.primary (let gateway auto-select)");
+  }
+}
+
+// ── Agent model list (populates the Agents UI "Primary model" dropdown) ──────
+// Build from all active providers so the Control UI dropdown matches the chat
+// picker. One representative flagship model per provider is sufficient; the
+// user picks from this list, and the chat picker still shows the full catalog.
+{
+  const providerModels = [
+    [process.env.ANTHROPIC_API_KEY,      [
+      "anthropic/claude-opus-4-5-20251101",
+      "anthropic/claude-sonnet-4-5-20250929",
+      "anthropic/claude-haiku-4-5-20251001",
+    ]],
+    [process.env.OPENAI_API_KEY,         [
+      "openai/gpt-5.2",
+      "openai/gpt-4o",
+      "openai/gpt-4o-mini",
+      "openai/o4-mini",
+    ]],
+    [process.env.OPENROUTER_API_KEY,     ["openrouter/anthropic/claude-opus-4-5"]],
+    [process.env.GEMINI_API_KEY,         [
+      "google/gemini-2.5-pro",
+      "google/gemini-2.0-flash",
+    ]],
+    [opencodeKey,                        ["opencode/claude-opus-4-5"]],
+    [process.env.COPILOT_GITHUB_TOKEN,   ["github-copilot/claude-opus-4-5"]],
+    [process.env.XAI_API_KEY,            ["xai/grok-3", "xai/grok-3-mini"]],
+    [process.env.GROQ_API_KEY,           ["groq/llama-3.3-70b-versatile"]],
+    [process.env.MISTRAL_API_KEY,        ["mistral/mistral-large-latest"]],
+    [process.env.CEREBRAS_API_KEY,       ["cerebras/llama-3.3-70b"]],
+    [process.env.VENICE_API_KEY,         ["venice/llama-3.3-70b"]],
+    [process.env.MOONSHOT_API_KEY,       ["moonshot/kimi-k2.5"]],
+    [process.env.KIMI_API_KEY,           ["kimi-coding/k2p5"]],
+    [process.env.MINIMAX_API_KEY,        ["minimax/MiniMax-M2.1"]],
+    [process.env.SYNTHETIC_API_KEY,      ["synthetic/hf:MiniMaxAI/MiniMax-M2.1"]],
+    [process.env.ZAI_API_KEY,            ["zai/glm-4.7"]],
+    [process.env.AI_GATEWAY_API_KEY,     ["vercel-ai-gateway/anthropic/claude-opus-4.5"]],
+    [process.env.XIAOMI_API_KEY,         ["xiaomi/mimo-v2-flash"]],
+    [process.env.AWS_ACCESS_KEY_ID,      [
+      "amazon-bedrock/anthropic.claude-opus-4-5-20251101-v1:0",
+      "amazon-bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0",
+    ]],
+    [ollamaUrl,                          ["ollama/llama3.3"]],
+  ];
+
+  const modelList = providerModels
+    .filter(([key]) => key)
+    .flatMap(([, models]) => models);
+
+  if (modelList.length > 0) {
+    config.agents.defaults.model.list = modelList;
+    console.log(`[configure] agent model list: ${modelList.length} models from configured providers`);
+  } else if (config.agents?.defaults?.model?.list) {
+    delete config.agents.defaults.model.list;
   }
 }
 
