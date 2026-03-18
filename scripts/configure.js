@@ -361,20 +361,18 @@ const primaryCandidates = [
   [ollamaUrl,                          "ollama/llama3.3"],
 ];
 if (process.env.OPENCLAW_PRIMARY_MODEL) {
-  // Explicit env var override
+  // Explicit env var override — also sets the picker to single-model mode,
+  // so only use this when you intentionally want to restrict the model list.
   config.agents.defaults.model.primary = process.env.OPENCLAW_PRIMARY_MODEL;
   console.log(`[configure] primary model (override): ${process.env.OPENCLAW_PRIMARY_MODEL}`);
-} else if (config.agents.defaults.model.primary) {
-  // Already set (from custom JSON or persisted config) — keep it
-  console.log(`[configure] primary model (from config): ${config.agents.defaults.model.primary}`);
 } else {
-  // Auto-select from first available provider
-  for (const [key, model] of primaryCandidates) {
-    if (key) {
-      config.agents.defaults.model.primary = model;
-      console.log(`[configure] primary model (auto): ${model}`);
-      break;
-    }
+  // Do NOT write agents.defaults.model.primary when OPENCLAW_PRIMARY_MODEL is
+  // unset. Writing it (even via auto-detection) causes the gateway to restrict
+  // the model picker to that single model. Let the gateway select its own
+  // default from the configured providers at runtime instead.
+  if (config.agents?.defaults?.model?.primary) {
+    delete config.agents.defaults.model.primary;
+    console.log("[configure] cleared agents.defaults.model.primary (let gateway auto-select)");
   }
 }
 
