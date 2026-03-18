@@ -122,6 +122,10 @@ fi
 
 
 # ── Configure openclaw from env vars ─────────────────────────────────────────
+# TEMP: force-clear persisted config to rule out stale-state crash
+echo "[entrypoint] DEBUG: clearing persisted openclaw.json for fresh config"
+rm -f "$STATE_DIR/openclaw.json" 2>/dev/null || true
+
 echo "[entrypoint] running configure..."
 node /app/scripts/configure.js
 
