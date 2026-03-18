@@ -383,13 +383,74 @@ if [ -f "$AUTH_PROFILES" ]; then
   " "$AUTH_PROFILES"
 fi
 
-# ── Start openclaw gateway ───────────────────────────────────────────────────
-echo "[entrypoint] starting openclaw gateway on port $GATEWAY_PORT..."
+# ── Start openclaw gateway (with crash recovery) ─────────────────────────────
+# If the gateway crashes within FAST_CRASH_WINDOW seconds it's almost certainly
+# a bad config field rather than a transient error. We progressively strip the
+# most fragile config sections and retry rather than letting Docker see a rapid
+# exit-restart loop (which would spin 200+ times with the same broken config).
+#
+# Healing sequence on consecutive fast crashes:
+#   crash 1 → strip agents.defaults.model.list
+#   crash 2 → strip all of agents.defaults.model
+#   crash 3 → strip entire agents.defaults block
+#   crash 4+ → backoff 30 s then retry from scratch (re-runs configure.js)
+#
+# Note: do NOT use exec — the gateway receives SIGHUP as PID 1 from Docker's
+# init system and exits unexpectedly. Run as a child of the shell instead.
 
-# cwd must be the app root so the gateway finds dist/control-ui/ assets
-# "gateway run" = foreground mode; all config comes from openclaw.json
-# Note: do NOT use exec here — the gateway receives SIGHUP as PID 1 from
-# Docker's init system which causes it to exit unexpectedly. Run it as a
-# child of the shell so signal handling works correctly.
+FAST_CRASH_WINDOW=20   # seconds — crashes faster than this are config crashes
+OCW_CONF="$STATE_DIR/openclaw.json"
+fast_crashes=0
+
+_strip_conf() {
+  local level=$1
+  node -e "
+    const fs = require('fs');
+    try {
+      const c = JSON.parse(fs.readFileSync('$OCW_CONF', 'utf8'));
+      const lvl = parseInt(process.argv[1]);
+      if (lvl >= 1 && c.agents && c.agents.defaults && c.agents.defaults.model)
+        delete c.agents.defaults.model.list;
+      if (lvl >= 2 && c.agents && c.agents.defaults)
+        delete c.agents.defaults.model;
+      if (lvl >= 3 && c.agents)
+        delete c.agents.defaults;
+      fs.writeFileSync('$OCW_CONF', JSON.stringify(c, null, 2));
+      console.log('[entrypoint] config stripped at level ' + lvl);
+    } catch(e) {
+      console.log('[entrypoint] config strip failed: ' + e.message);
+    }
+  " "$level" || true
+}
+
+echo "[entrypoint] starting openclaw gateway on port $GATEWAY_PORT..."
 cd /opt/openclaw/app
-openclaw gateway run
+
+while true; do
+  _start=$(date +%s)
+  openclaw gateway run
+  _code=$?
+  _elapsed=$(( $(date +%s) - _start ))
+
+  if [ $_elapsed -lt $FAST_CRASH_WINDOW ]; then
+    fast_crashes=$(( fast_crashes + 1 ))
+    echo "[entrypoint] gateway fast crash #${fast_crashes} after ${_elapsed}s (exit ${_code})"
+
+    if [ $fast_crashes -le 3 ]; then
+      echo "[entrypoint] stripping config (level ${fast_crashes}) and retrying..."
+      _strip_conf "$fast_crashes"
+      sleep 2
+    else
+      echo "[entrypoint] repeated fast crashes — waiting 30s, then rebuilding config from scratch..."
+      sleep 30
+      node /app/scripts/configure.js 2>&1 || true
+      openclaw doctor --fix 2>&1 || true
+      fast_crashes=0
+    fi
+  else
+    # Gateway ran for a reasonable time; reset the fast-crash counter.
+    echo "[entrypoint] gateway exited after ${_elapsed}s (exit ${_code}), restarting..."
+    fast_crashes=0
+    sleep 2
+  fi
+done
