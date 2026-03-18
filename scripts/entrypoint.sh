@@ -404,5 +404,8 @@ echo "[entrypoint] starting openclaw gateway on port $GATEWAY_PORT..."
 
 # cwd must be the app root so the gateway finds dist/control-ui/ assets
 # "gateway run" = foreground mode; all config comes from openclaw.json
+# Note: do NOT use exec here — the gateway receives SIGHUP as PID 1 from
+# Docker's init system which causes it to exit unexpectedly. Run it as a
+# child of the shell so signal handling works correctly.
 cd /opt/openclaw/app
-exec openclaw gateway run
+openclaw gateway run
