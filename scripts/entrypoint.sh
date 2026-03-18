@@ -309,6 +309,14 @@ server {
         internal;
     }
 
+    # Debug: serve gateway crash log directly (same auth as rest of site)
+    location = /debug.txt {
+        ${AUTH_BLOCK}
+        root /usr/share/nginx/html;
+        default_type text/plain;
+        add_header Cache-Control "no-store";
+    }
+
     # Browser sidecar proxy (VNC web UI)
     location /browser/ {
         ${AUTH_BLOCK}
@@ -399,12 +407,22 @@ fi
 
 # ── Start openclaw gateway ───────────────────────────────────────────────────
 echo "[entrypoint] starting openclaw gateway on port $GATEWAY_PORT..."
-echo "[entrypoint] openclaw config:"
-cat "$STATE_DIR/openclaw.json" 2>/dev/null || echo "[entrypoint] no config found"
-echo "[entrypoint] openclaw version:"
-openclaw --version 2>&1 || true
 
-# cwd must be the app root so the gateway finds dist/control-ui/ assets
-# "gateway run" = foreground mode; all config comes from openclaw.json
+# Write config and version info to a debug file served by nginx
+{
+  echo "=== openclaw config ==="
+  cat "$STATE_DIR/openclaw.json" 2>/dev/null || echo "(no config found)"
+  echo ""
+  echo "=== openclaw version ==="
+  openclaw --version 2>&1 || echo "(version unavailable)"
+} > /usr/share/nginx/html/debug.txt 2>&1
+
+# Run gateway (not exec) so we capture crash output; keep container alive after crash
 cd /opt/openclaw/app
-exec openclaw gateway run
+openclaw gateway run 2>&1 | tee -a /usr/share/nginx/html/debug.txt
+EXIT=$?
+echo "[entrypoint] gateway exited with code $EXIT at $(date -u)" >> /usr/share/nginx/html/debug.txt
+
+# Keep container alive so nginx stays up and debug.txt is accessible
+echo "[entrypoint] gateway exited ($EXIT) - nginx still up; sleeping to allow log retrieval"
+sleep 86400
