@@ -122,8 +122,10 @@ fi
 
 
 # ── Configure openclaw from env vars ─────────────────────────────────────────
-# TEMP: force-clear persisted config to rule out stale-state crash
-echo "[entrypoint] DEBUG: clearing persisted openclaw.json for fresh config"
+# Clear persisted openclaw.json on each startup to prevent version-mismatch
+# crashes when the base image version changes. All config is reconstructed
+# from env vars by configure.js + openclaw doctor --fix, so nothing is lost.
+echo "[entrypoint] clearing persisted openclaw.json (rebuilt from env vars)"
 rm -f "$STATE_DIR/openclaw.json" 2>/dev/null || true
 
 echo "[entrypoint] running configure..."
@@ -309,14 +311,6 @@ server {
         internal;
     }
 
-    # Debug: serve gateway crash log directly (same auth as rest of site)
-    location = /debug.txt {
-        ${AUTH_BLOCK}
-        root /usr/share/nginx/html;
-        default_type text/plain;
-        add_header Cache-Control "no-store";
-    }
-
     # Browser sidecar proxy (VNC web UI)
     location /browser/ {
         ${AUTH_BLOCK}
@@ -408,21 +402,7 @@ fi
 # ── Start openclaw gateway ───────────────────────────────────────────────────
 echo "[entrypoint] starting openclaw gateway on port $GATEWAY_PORT..."
 
-# Write config and version info to a debug file served by nginx
-{
-  echo "=== openclaw config ==="
-  cat "$STATE_DIR/openclaw.json" 2>/dev/null || echo "(no config found)"
-  echo ""
-  echo "=== openclaw version ==="
-  openclaw --version 2>&1 || echo "(version unavailable)"
-} > /usr/share/nginx/html/debug.txt 2>&1
-
-# Run gateway (not exec) so we capture crash output; keep container alive after crash
+# cwd must be the app root so the gateway finds dist/control-ui/ assets
+# "gateway run" = foreground mode; all config comes from openclaw.json
 cd /opt/openclaw/app
-openclaw gateway run 2>&1 | tee -a /usr/share/nginx/html/debug.txt
-EXIT=$?
-echo "[entrypoint] gateway exited with code $EXIT at $(date -u)" >> /usr/share/nginx/html/debug.txt
-
-# Keep container alive so nginx stays up and debug.txt is accessible
-echo "[entrypoint] gateway exited ($EXIT) - nginx still up; sleeping to allow log retrieval"
-sleep 86400
+exec openclaw gateway run
