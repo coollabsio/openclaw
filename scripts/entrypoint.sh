@@ -336,6 +336,32 @@ nginx
 rm -f /tmp/openclaw-gateway.lock 2>/dev/null || true
 rm -f "$STATE_DIR/gateway.lock" 2>/dev/null || true
 
+# ── Remove cached auth for providers that are no longer configured ────────────
+# This prevents unconfigured providers (e.g. github-copilot, opencode) from
+# appearing in the model picker or causing "No API key" errors.
+AUTH_PROFILES="$STATE_DIR/agents/main/agent/auth-profiles.json"
+if [ -f "$AUTH_PROFILES" ]; then
+  node -e "
+    const fs = require('fs');
+    const file = process.argv[1];
+    try {
+      const profiles = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const toRemove = [];
+      if (!process.env.COPILOT_GITHUB_TOKEN && profiles['github-copilot'])
+        toRemove.push('github-copilot');
+      if (!process.env.OPENCODE_API_KEY && !process.env.OPENCODE_ZEN_API_KEY && profiles['opencode'])
+        toRemove.push('opencode');
+      if (toRemove.length > 0) {
+        toRemove.forEach(k => delete profiles[k]);
+        fs.writeFileSync(file, JSON.stringify(profiles, null, 2));
+        console.log('[entrypoint] removed unconfigured providers from auth-profiles:', toRemove.join(', '));
+      }
+    } catch (e) {
+      console.log('[entrypoint] could not clean auth-profiles:', e.message);
+    }
+  " "$AUTH_PROFILES"
+fi
+
 # ── Start openclaw gateway ───────────────────────────────────────────────────
 echo "[entrypoint] starting openclaw gateway on port $GATEWAY_PORT..."
 
