@@ -294,6 +294,44 @@ server {
 }
 NGINXEOF
 
+# ── ClawdTalk voice/SMS integration ─────────────────────────────────────────
+if [ -n "${CLAWDTALK_API_KEY:-}" ]; then
+  CLAWDTALK_DIR="$STATE_DIR/skills/clawdtalk-client"
+  mkdir -p "$CLAWDTALK_DIR"
+
+  # Download skill on first run (or if ws-client.js is missing)
+  if [ ! -f "$CLAWDTALK_DIR/ws-client.js" ]; then
+    echo "[entrypoint] downloading clawdtalk-client skill..."
+    curl -sL https://github.com/team-telnyx/clawdtalk-client/archive/refs/heads/main.tar.gz \
+      | tar -xz --strip-components=1 -C "$CLAWDTALK_DIR"
+  fi
+
+  # Write skill-config.json (uses ${VAR} syntax resolved from .env)
+  cat > "$CLAWDTALK_DIR/skill-config.json" <<'CLAWDJSON'
+{
+  "api_key": "${CLAWDTALK_API_KEY}",
+  "server": "https://clawdtalk.com"
+}
+CLAWDJSON
+
+  # Write .env so the skill can resolve ${CLAWDTALK_API_KEY}
+  printf 'CLAWDTALK_API_KEY=%s\n' "$CLAWDTALK_API_KEY" > "$STATE_DIR/.env"
+  chmod 600 "$STATE_DIR/.env"
+
+  # Install Node.js dependencies
+  if [ -f "$CLAWDTALK_DIR/package.json" ] && [ ! -d "$CLAWDTALK_DIR/node_modules/ws" ]; then
+    echo "[entrypoint] installing ClawdTalk dependencies..."
+    npm install --production --prefix "$CLAWDTALK_DIR" 2>&1 | tail -3
+  fi
+
+  # Start WebSocket client in background (connects to ClawdTalk, forwards calls to gateway)
+  echo "[entrypoint] starting ClawdTalk WebSocket client..."
+  cd "$CLAWDTALK_DIR"
+  nohup node ws-client.js >> "$STATE_DIR/clawdtalk.log" 2>&1 &
+  echo "[entrypoint] ClawdTalk started (pid: $!, log: $STATE_DIR/clawdtalk.log)"
+  cd /opt/openclaw/app
+fi
+
 # ── Start nginx ──────────────────────────────────────────────────────────────
 echo "[entrypoint] starting nginx on port ${PORT:-8080}..."
 nginx

@@ -99,6 +99,15 @@ config.gateway.controlUi.allowInsecureAuth = true;
 config.gateway.controlUi.dangerouslyDisableDeviceAuth = true;
 config.gateway.controlUi.enabled = true;
 
+// ClawdTalk: allow sessions_send tool so voice calls can route to the agent
+if (process.env.CLAWDTALK_API_KEY) {
+  ensure(config, "gateway", "tools");
+  const allowed = Array.isArray(config.gateway.tools.allow) ? config.gateway.tools.allow : [];
+  if (!allowed.includes("sessions_send")) allowed.push("sessions_send");
+  config.gateway.tools.allow = allowed;
+  console.log("[configure] ClawdTalk: sessions_send tool allowed");
+}
+
 // CSV → array of allowed origins (e.g. "https://claw.designflow.app,https://other.domain.com")
 if (process.env.GATEWAY_ALLOWED_ORIGINS) {
   config.gateway.controlUi.allowedOrigins = process.env.GATEWAY_ALLOWED_ORIGINS
