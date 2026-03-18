@@ -120,27 +120,6 @@ if [ -n "$INIT_SCRIPT" ]; then
   fi
 fi
 
-# ── Clear persisted primary model when OPENCLAW_PRIMARY_MODEL is not set ─────
-# When agents.defaults.model.primary is set in openclaw.json the gateway
-# restricts the model picker to only that one model. We only want that
-# behaviour when the operator has explicitly set OPENCLAW_PRIMARY_MODEL.
-# If the env var is absent, wipe the persisted value so the gateway shows
-# the full catalog and picks its own default.
-if [ -z "${OPENCLAW_PRIMARY_MODEL:-}" ]; then
-  node -e "
-    const fs = require('fs');
-    const file = process.env.OPENCLAW_STATE_DIR + '/openclaw.json';
-    try {
-      const config = JSON.parse(fs.readFileSync(file, 'utf8'));
-      if (config?.agents?.defaults?.model?.primary) {
-        const was = config.agents.defaults.model.primary;
-        delete config.agents.defaults.model.primary;
-        fs.writeFileSync(file, JSON.stringify(config, null, 2));
-        console.log('[entrypoint] cleared persisted primary model (OPENCLAW_PRIMARY_MODEL not set):', was);
-      }
-    } catch {}
-  " 2>/dev/null || true
-fi
 
 # ── Configure openclaw from env vars ─────────────────────────────────────────
 echo "[entrypoint] running configure..."
