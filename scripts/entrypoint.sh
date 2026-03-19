@@ -415,7 +415,10 @@ fi
 #   crash 1 → strip agents.defaults.model.list
 #   crash 2 → strip all of agents.defaults.model
 #   crash 3 → strip entire agents.defaults block
-#   crash 4+ → backoff 30 s then retry from scratch (re-runs configure.js)
+#   crash 4 → strip channels (channel configs are the most common crash source)
+#   crash 5 → strip browser + hooks + tools
+#   crash 6 → strip models.providers + bedrockDiscovery (custom provider entries)
+#   crash 7+ → write truly minimal gateway-only config, wait 60s, reset counter
 #
 # Note: do NOT use exec — the gateway receives SIGHUP as PID 1 from Docker's
 # init system and exits unexpectedly. Run as a child of the shell instead.
@@ -431,18 +434,75 @@ _strip_conf() {
     try {
       const c = JSON.parse(fs.readFileSync('$OCW_CONF', 'utf8'));
       const lvl = parseInt(process.argv[1]);
+      // Level 1-3: agents config (most common crash: bad model fields)
       if (lvl >= 1 && c.agents && c.agents.defaults && c.agents.defaults.model)
         delete c.agents.defaults.model.list;
       if (lvl >= 2 && c.agents && c.agents.defaults)
         delete c.agents.defaults.model;
       if (lvl >= 3 && c.agents)
         delete c.agents.defaults;
+      // Level 4: channels (channel configs with bad tokens/options crash gateway)
+      if (lvl >= 4)
+        delete c.channels;
+      // Level 5: browser + hooks + tools
+      if (lvl >= 5) {
+        delete c.browser;
+        delete c.hooks;
+        delete c.tools;
+      }
+      // Level 6: custom provider configs (bad baseUrl/models entries crash gateway)
+      if (lvl >= 6 && c.models) {
+        delete c.models.providers;
+        delete c.models.bedrockDiscovery;
+      }
       fs.writeFileSync('$OCW_CONF', JSON.stringify(c, null, 2));
       console.log('[entrypoint] config stripped at level ' + lvl);
     } catch(e) {
       console.log('[entrypoint] config strip failed: ' + e.message);
     }
   " "$level" || true
+}
+
+_write_minimal_conf() {
+  # Write a bare-minimum config guaranteed to start the gateway.
+  # Used as last resort before resetting the crash counter.
+  local primary=""
+  for pair in \
+    "ANTHROPIC_API_KEY:anthropic/claude-opus-4-5-20251101" \
+    "OPENAI_API_KEY:openai/gpt-5.2" \
+    "OPENROUTER_API_KEY:openrouter/anthropic/claude-opus-4-5" \
+    "GEMINI_API_KEY:google/gemini-2.5-pro" \
+    "XAI_API_KEY:xai/grok-3" \
+    "GROQ_API_KEY:groq/llama-3.3-70b-versatile"; do
+    local envkey="${pair%%:*}"
+    local model="${pair##*:}"
+    if [ -n "${!envkey:-}" ]; then
+      primary="$model"
+      break
+    fi
+  done
+  [ -z "$primary" ] && primary="anthropic/claude-opus-4-5-20251101"
+
+  node -e "
+    const fs = require('fs');
+    const conf = {
+      gateway: {
+        port: parseInt(process.env.OPENCLAW_GATEWAY_PORT || '18789'),
+        mode: 'local',
+        auth: { mode: 'token', token: process.env.OPENCLAW_GATEWAY_TOKEN || '' },
+        bind: 'loopback',
+        controlUi: { allowInsecureAuth: true, dangerouslyDisableDeviceAuth: true, enabled: true }
+      },
+      agents: {
+        defaults: {
+          workspace: process.env.OPENCLAW_WORKSPACE_DIR || '/data/workspace',
+          model: { primary: process.argv[1] }
+        }
+      }
+    };
+    fs.writeFileSync(process.argv[2], JSON.stringify(conf, null, 2));
+    console.log('[entrypoint] wrote minimal config (primary: ' + process.argv[1] + ')');
+  " "$primary" "$OCW_CONF" || true
 }
 
 echo "[entrypoint] starting openclaw gateway on port $GATEWAY_PORT..."
@@ -458,15 +518,14 @@ while true; do
     fast_crashes=$(( fast_crashes + 1 ))
     echo "[entrypoint] gateway fast crash #${fast_crashes} after ${_elapsed}s (exit ${_code})"
 
-    if [ $fast_crashes -le 3 ]; then
+    if [ $fast_crashes -le 6 ]; then
       echo "[entrypoint] stripping config (level ${fast_crashes}) and retrying..."
       _strip_conf "$fast_crashes"
       sleep 2
     else
-      echo "[entrypoint] repeated fast crashes — waiting 30s, then rebuilding config from scratch..."
-      sleep 30
-      node /app/scripts/configure.js 2>&1 || true
-      openclaw doctor --fix 2>&1 || true
+      echo "[entrypoint] all strip levels exhausted — writing minimal config, waiting 60s..."
+      _write_minimal_conf
+      sleep 60
       fast_crashes=0
     fi
   else

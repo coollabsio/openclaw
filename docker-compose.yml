@@ -18,7 +18,7 @@ services:
       - BROWSER_CDP_URL=http://browser:9223
       - BROWSER_DEFAULT_PROFILE=openclaw
       - BROWSER_EVALUATE_ENABLED=true
-      - DOCKER_HOST=${DOCKER_HOST:-unix:///var/run/docker.sock}
+      - DOCKER_HOST=${DOCKER_HOST}
     volumes:
       - openclaw-data:/data
       # Uncomment to give openclaw agents access to the Docker API:
