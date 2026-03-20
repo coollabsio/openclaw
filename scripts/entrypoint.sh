@@ -317,6 +317,14 @@ server {
         internal;
     }
 
+    # Gateway crash log — auth-protected diagnostic endpoint
+    location = /gateway.log {
+        ${AUTH_BLOCK}
+        alias ${STATE_DIR}/gateway.log;
+        default_type text/plain;
+        add_header Cache-Control no-store;
+    }
+
     # Browser sidecar proxy (VNC web UI)
     location /browser/ {
         ${AUTH_BLOCK}
@@ -508,9 +516,24 @@ _write_minimal_conf() {
 echo "[entrypoint] starting openclaw gateway on port $GATEWAY_PORT..."
 cd /opt/openclaw/app
 
+# Log file for gateway crash output — viewable at /data/.openclaw/gateway.log
+GATEWAY_LOG="$STATE_DIR/gateway.log"
+# Rotate: keep last 5000 lines across restarts
+_rotate_log() {
+  if [ -f "$GATEWAY_LOG" ]; then
+    local lines
+    lines=$(wc -l < "$GATEWAY_LOG" 2>/dev/null || echo 0)
+    if [ "$lines" -gt 5000 ]; then
+      tail -n 2500 "$GATEWAY_LOG" > "${GATEWAY_LOG}.tmp" && mv "${GATEWAY_LOG}.tmp" "$GATEWAY_LOG"
+    fi
+  fi
+}
+
 while true; do
+  _rotate_log
   _start=$(date +%s)
-  openclaw gateway run
+  echo "--- gateway start $(date -u '+%Y-%m-%dT%H:%M:%SZ') ---" >> "$GATEWAY_LOG"
+  openclaw gateway run >> "$GATEWAY_LOG" 2>&1
   _code=$?
   _elapsed=$(( $(date +%s) - _start ))
 
