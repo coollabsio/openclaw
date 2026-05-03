@@ -331,6 +331,23 @@ if (ollamaUrl) {
   removeProvider("ollama", "Ollama", "OLLAMA_BASE_URL");
 }
 
+// OpenAI-Compatible custom provider (arbitrary URL + token)
+if (process.env.CUSTOM_API_KEY) {
+  console.log("[configure] configuring openai-compatible provider");
+  ensure(config, "models", "providers");
+  const modelName = process.env.CUSTOM_MODEL || "gpt-4";
+  config.models.providers["openai-compatible"] = {
+    api: "openai-completions",
+    apiKey: process.env.CUSTOM_API_KEY,
+    baseUrl: (process.env.CUSTOM_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, ""),
+    models: [
+      { id: modelName, name: modelName, contextWindow: 128000 },
+    ],
+  };
+} else {
+  removeProvider("openai-compatible", "OpenAI-Compatible", "CUSTOM_API_KEY");
+}
+
 // ── Primary model selection (first available provider wins) ─────────────────
 const primaryCandidates = [
   [process.env.ANTHROPIC_API_KEY,      "anthropic/claude-opus-4-5-20251101"],
@@ -353,6 +370,7 @@ const primaryCandidates = [
   [process.env.XIAOMI_API_KEY,         "xiaomi/mimo-v2-flash"],
   [process.env.AWS_ACCESS_KEY_ID,      "amazon-bedrock/anthropic.claude-opus-4-5-20251101-v1:0"],
   [ollamaUrl,                          "ollama/llama3.3"],
+  [process.env.CUSTOM_API_KEY,         "openai-compatible/gpt-4"],
 ];
 if (process.env.OPENCLAW_PRIMARY_MODEL) {
   // Explicit env var override
@@ -745,7 +763,8 @@ const hasProvider =
   // Custom proxy providers also need env var keys
   !!process.env.VENICE_API_KEY || !!process.env.MINIMAX_API_KEY ||
   !!process.env.MOONSHOT_API_KEY || !!process.env.KIMI_API_KEY ||
-  !!process.env.SYNTHETIC_API_KEY || !!process.env.XIAOMI_API_KEY;
+  !!process.env.SYNTHETIC_API_KEY || !!process.env.XIAOMI_API_KEY ||
+  !!process.env.CUSTOM_API_KEY;
 
 if (!hasProvider) {
   console.error("[configure] ERROR: No AI provider API key set.");
@@ -754,7 +773,7 @@ if (!hasProvider) {
   console.error("[configure]   XAI_API_KEY, GROQ_API_KEY, MISTRAL_API_KEY, CEREBRAS_API_KEY, ZAI_API_KEY,");
   console.error("[configure]   AI_GATEWAY_API_KEY, OPENCODE_API_KEY, COPILOT_GITHUB_TOKEN, VENICE_API_KEY,");
   console.error("[configure]   MOONSHOT_API_KEY, KIMI_API_KEY, MINIMAX_API_KEY, SYNTHETIC_API_KEY, XIAOMI_API_KEY,");
-  console.error("[configure]   AWS_ACCESS_KEY_ID+AWS_SECRET_ACCESS_KEY (Bedrock), or OLLAMA_BASE_URL (local)");
+  console.error("[configure]   AWS_ACCESS_KEY_ID+AWS_SECRET_ACCESS_KEY (Bedrock), OLLAMA_BASE_URL (local), or CUSTOM_API_KEY (OpenAI-compatible)");
   process.exit(1);
 }
 
