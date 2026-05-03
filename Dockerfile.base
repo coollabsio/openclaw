@@ -21,6 +21,9 @@ WORKDIR /openclaw
 ARG OPENCLAW_GIT_REF=main
 RUN git clone --depth 1 --branch "${OPENCLAW_GIT_REF}" https://github.com/openclaw/openclaw.git .
 
+RUN pnpm install --frozen-lockfile
+RUN pnpm ui:install
+
 # Patch: relax version requirements for packages using workspace protocol.
 RUN set -eux; \
   find ./extensions -name 'package.json' -type f | while read -r f; do \
@@ -28,10 +31,9 @@ RUN set -eux; \
     sed -i -E 's/"openclaw"[[:space:]]*:[[:space:]]*"workspace:[^"]+"/"openclaw": "*"/g' "$f"; \
   done
 
-RUN pnpm install --no-frozen-lockfile
 RUN pnpm build
 ENV OPENCLAW_PREFER_PNPM=1
-RUN pnpm ui:install && pnpm ui:build
+RUN pnpm ui:build
 
 
 # Runtime image
