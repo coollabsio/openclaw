@@ -142,6 +142,29 @@ if [ -n "$HOOKS_PATH" ]; then
   echo "[entrypoint] hooks enabled, path: $HOOKS_PATH (will bypass HTTP auth)"
 fi
 
+# ── Read channel webhook paths that need auth bypass ──────────────────────────
+CHANNEL_WH_PATHS=""
+CHANNEL_WH_PATHS=$(node -e "
+  try {
+    const c = JSON.parse(require('fs').readFileSync('$STATE_DIR/openclaw.json','utf8'));
+    const paths = [];
+    const ch = c.channels || {};
+    // Campfire — always webhook-based
+    if (ch.campfire && ch.campfire.enabled)
+      paths.push(ch.campfire.webhookPath || '/campfire');
+    // Slack — only in HTTP mode (socket mode doesn't need this)
+    if (ch.slack && ch.slack.enabled && ch.slack.mode === 'http')
+      paths.push(ch.slack.webhookPath || '/slack/events');
+    // Telegram — only when webhook mode is enabled
+    if (ch.telegram && ch.telegram.enabled && ch.telegram.webhookUrl)
+      paths.push(ch.telegram.webhookPath || '/telegram-webhook');
+    if (paths.length) process.stdout.write(paths.join(' '));
+  } catch {}
+" 2>/dev/null || true)
+if [ -n "$CHANNEL_WH_PATHS" ]; then
+  echo "[entrypoint] channel webhook paths (will bypass HTTP auth): $CHANNEL_WH_PATHS"
+fi
+
 # ── Generate nginx config ────────────────────────────────────────────────────
 AUTH_PASSWORD="${AUTH_PASSWORD:-}"
 AUTH_USERNAME="${AUTH_USERNAME:-admin}"
@@ -177,6 +200,33 @@ if [ -n "$HOOKS_PATH" ]; then
         error_page 502 503 504 /starting.html;
     }"
 fi
+
+# Build channel webhook location blocks (bypass HTTP basic auth; the gateway
+# does not auth-protect plugin HTTP handlers so webhooks reach the channel
+# plugin directly. Nginx rate-limits and restricts to POST for defence-in-depth.)
+CHANNEL_LOCATION_BLOCKS=""
+for WH_PATH in $CHANNEL_WH_PATHS; do
+  [ -z "$WH_PATH" ] && continue
+  CHANNEL_LOCATION_BLOCKS="${CHANNEL_LOCATION_BLOCKS}
+    location ${WH_PATH} {
+        limit_except POST { deny all; }
+
+        proxy_pass http://127.0.0.1:${GATEWAY_PORT};
+        proxy_set_header Authorization \"Bearer ${GATEWAY_TOKEN}\";
+
+        proxy_set_header Host \\\$host;
+        proxy_set_header X-Real-IP \\\$remote_addr;
+        proxy_set_header X-Forwarded-For \\\$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \\\$scheme;
+
+        proxy_http_version 1.1;
+
+        proxy_read_timeout 86400s;
+        proxy_send_timeout 86400s;
+
+        error_page 502 503 504 /starting.html;
+    }"
+done
 
 # ── Write startup page for 502/503/504 while gateway boots ───────────────────
 mkdir -p /usr/share/nginx/html
@@ -247,6 +297,8 @@ server {
     }
 
     ${HOOKS_LOCATION_BLOCK}
+
+    ${CHANNEL_LOCATION_BLOCKS}
 
     location / {
         ${AUTH_BLOCK}
