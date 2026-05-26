@@ -305,10 +305,11 @@ function simulateProviderConfig() {
 {
   clearEnv();
   process.env.CUSTOM_API_KEY = 'sk-primary';
+  const customPrimaryModel = `openai-compatible/${process.env.CUSTOM_MODEL || 'gpt-4'}`;
   const primaryCandidates = [
     [process.env.ANTHROPIC_API_KEY, 'anthropic/claude-opus-4-5-20251101'],
     [process.env.OPENAI_API_KEY, 'openai/gpt-5.2'],
-    [process.env.CUSTOM_API_KEY, 'openai-compatible/gpt-4'],
+    [process.env.CUSTOM_API_KEY, customPrimaryModel],
   ];
   let selected = null;
   for (const [key, model] of primaryCandidates) {
@@ -320,6 +321,27 @@ function simulateProviderConfig() {
   eq(selected, 'openai-compatible/gpt-4', 'openai-compatible selected when no higher-priority provider');
 }
 
+// Test: primaryCandidates uses CUSTOM_MODEL for openai-compatible
+{
+  clearEnv();
+  process.env.CUSTOM_API_KEY = 'sk-primary';
+  process.env.CUSTOM_MODEL = 'my-primary-model';
+  const customPrimaryModel = `openai-compatible/${process.env.CUSTOM_MODEL || 'gpt-4'}`;
+  const primaryCandidates = [
+    [process.env.ANTHROPIC_API_KEY, 'anthropic/claude-opus-4-5-20251101'],
+    [process.env.OPENAI_API_KEY, 'openai/gpt-5.2'],
+    [process.env.CUSTOM_API_KEY, customPrimaryModel],
+  ];
+  let selected = null;
+  for (const [key, model] of primaryCandidates) {
+    if (key) {
+      selected = model;
+      break;
+    }
+  }
+  eq(selected, 'openai-compatible/my-primary-model', 'openai-compatible primary model honors CUSTOM_MODEL');
+}
+
 // Test: openai-compatible loses to Anthropic in priority
 {
   clearEnv();
@@ -328,7 +350,7 @@ function simulateProviderConfig() {
   const primaryCandidates = [
     [process.env.ANTHROPIC_API_KEY, 'anthropic/claude-opus-4-5-20251101'],
     [process.env.OPENAI_API_KEY, 'openai/gpt-5.2'],
-    [process.env.CUSTOM_API_KEY, 'openai-compatible/gpt-4'],
+    [process.env.CUSTOM_API_KEY, `openai-compatible/${process.env.CUSTOM_MODEL || 'gpt-4'}`],
   ];
   let selected = null;
   for (const [key, model] of primaryCandidates) {
@@ -348,7 +370,7 @@ function simulateProviderConfig() {
   const primaryCandidates = [
     [process.env.ANTHROPIC_API_KEY, 'anthropic/claude-opus-4-5-20251101'],
     [process.env.OPENAI_API_KEY, 'openai/gpt-5.2'],
-    [process.env.CUSTOM_API_KEY, 'openai-compatible/gpt-4'],
+    [process.env.CUSTOM_API_KEY, `openai-compatible/${process.env.CUSTOM_MODEL || 'gpt-4'}`],
   ];
   let selected = null;
   for (const [key, model] of primaryCandidates) {

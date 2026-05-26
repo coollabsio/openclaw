@@ -349,6 +349,7 @@ if (process.env.CUSTOM_API_KEY) {
 }
 
 // ── Primary model selection (first available provider wins) ─────────────────
+const customPrimaryModel = `openai-compatible/${process.env.CUSTOM_MODEL || "gpt-4"}`;
 const primaryCandidates = [
   [process.env.ANTHROPIC_API_KEY,      "anthropic/claude-opus-4-5-20251101"],
   [process.env.OPENAI_API_KEY,         "openai/gpt-5.2"],
@@ -370,7 +371,7 @@ const primaryCandidates = [
   [process.env.XIAOMI_API_KEY,         "xiaomi/mimo-v2-flash"],
   [process.env.AWS_ACCESS_KEY_ID,      "amazon-bedrock/anthropic.claude-opus-4-5-20251101-v1:0"],
   [ollamaUrl,                          "ollama/llama3.3"],
-  [process.env.CUSTOM_API_KEY,         "openai-compatible/gpt-4"],
+  [process.env.CUSTOM_API_KEY,         customPrimaryModel],
 ];
 if (process.env.OPENCLAW_PRIMARY_MODEL) {
   // Explicit env var override
