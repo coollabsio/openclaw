@@ -320,13 +320,18 @@ if (ollamaUrl) {
   console.log("[configure] configuring Ollama provider");
   ensure(config, "models", "providers");
   const base = ollamaUrl.endsWith("/v1") ? ollamaUrl : `${ollamaUrl}/v1`;
-  config.models.providers.ollama = {
-    api: "openai-completions",
-    baseUrl: base,
-    models: [
-      { id: "llama3.3", name: "Llama 3.3", contextWindow: 128000 },
-    ],
-  };
+  
+  if (!config.models.providers.ollama) {
+    config.models.providers.ollama = {
+      api: "openai-completions",
+      baseUrl: base,
+      models: [
+        { id: "llama3.3", name: "Llama 3.3", contextWindow: 128000 },
+      ],
+    };
+  } else {
+    config.models.providers.ollama.baseUrl = base;
+  }
 } else {
   removeProvider("ollama", "Ollama", "OLLAMA_BASE_URL");
 }
