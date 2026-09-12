@@ -22,10 +22,10 @@ on:
         default: false
 
 env:
-  GITHUB_REGISTRY: ghcr.io
-  DOCKER_REGISTRY: docker.io
-  IMAGE_NAME: coollabsio/openclaw
-  BASE_IMAGE_NAME: coollabsio/openclaw-base
+  GITHUB_REGISTRY: ${{ vars.GITHUB_REGISTRY || 'ghcr.io' }}
+  DOCKER_REGISTRY: ${{ vars.DOCKER_REGISTRY || 'docker.io' }}
+  IMAGE_NAME: ${{ vars.IMAGE_NAME || 'coollabsio/openclaw' }}
+  BASE_IMAGE_NAME: ${{ vars.BASE_IMAGE_NAME || 'coollabsio/openclaw-base' }}
 
 jobs:
   check-release:
