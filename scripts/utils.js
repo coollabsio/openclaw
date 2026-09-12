@@ -80,6 +80,22 @@ function parseAllowedOrigins(rawValue) {
   return parseArrayValue(trimmed);
 }
 
+/**
+ * Converts a Coolify-provided hostname or URL into a browser origin.
+ * Coolify may expose COOLIFY_FQDN without a scheme, while OpenClaw compares
+ * allowed origins against the browser's full Origin header.
+ * @param {string} rawValue - The COOLIFY_FQDN or COOLIFY_URL value
+ * @returns {string} - A normalized HTTP(S) origin without trailing slashes
+ */
+function normalizeCoolifyOrigin(rawValue) {
+  const trimmed = rawValue.trim().replace(/\/+$/, '');
+  if (!trimmed) {
+    return '';
+  }
+
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
+
 module.exports = {
   REGEX,
   ENV_VAR,
@@ -87,4 +103,5 @@ module.exports = {
   coerceType,
   parseArrayValue,
   parseAllowedOrigins,
+  normalizeCoolifyOrigin,
 };

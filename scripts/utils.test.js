@@ -11,6 +11,7 @@ const {
   coerceType,
   parseArrayValue,
   parseAllowedOrigins,
+  normalizeCoolifyOrigin,
 } = require('./utils');
 
 let passed = 0;
@@ -143,6 +144,41 @@ throws(
 throws(
   () => parseAllowedOrigins('['),
   'bare bracket throws'
+);
+
+// ── normalizeCoolifyOrigin ──────────────────────────────────────────────────
+
+console.log('normalizeCoolifyOrigin');
+
+eq(
+  normalizeCoolifyOrigin('app.example.com'),
+  'https://app.example.com',
+  'bare hostname defaults to https'
+);
+eq(
+  normalizeCoolifyOrigin('app.example.com/'),
+  'https://app.example.com',
+  'bare hostname drops trailing slash'
+);
+eq(
+  normalizeCoolifyOrigin(' https://app.example.com/ '),
+  'https://app.example.com',
+  'https origin is preserved and trimmed'
+);
+eq(
+  normalizeCoolifyOrigin('http://localhost:8080/'),
+  'http://localhost:8080',
+  'explicit http origin is preserved'
+);
+eq(
+  normalizeCoolifyOrigin(''),
+  '',
+  'empty value stays empty'
+);
+eq(
+  normalizeCoolifyOrigin(' / '),
+  '',
+  'slash-only value becomes empty'
 );
 
 // ── REGEX patterns ──────────────────────────────────────────────────────────

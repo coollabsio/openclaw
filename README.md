@@ -182,6 +182,11 @@ Configure Cross-Origin Resource Sharing for the Control UI. Required when access
 |---|---|
 | `OPENCLAW_ALLOWED_ORIGINS` | Comma-separated list or JSON array of allowed origins. Example: `http://localhost:5173,https://app.example.com` or `["http://localhost:5173"]`. |
 
+On Coolify, `COOLIFY_FQDN` is added automatically. If Coolify supplies a bare
+hostname, it is normalized to an HTTPS origin (for example,
+`app.example.com` becomes `https://app.example.com`). Explicit `http://` and
+`https://` schemes are preserved.
+
 ```bash
 # Allow specific origins
 OPENCLAW_ALLOWED_ORIGINS=http://localhost:5173,https://app.example.com
@@ -407,8 +412,8 @@ environment:
 
 | Variable | Description |
 |---|---|
-| `COOLIFY_FQDN` | Public FQDN assigned by Coolify. |
-| `COOLIFY_URL` | Coolify dashboard URL. |
+| `COOLIFY_FQDN` | Public FQDN assigned by Coolify. Bare hostnames are normalized to `https://` for the Control UI allowed origins. |
+| `COOLIFY_URL` | Coolify URL used as the allowed-origin fallback when `COOLIFY_FQDN` is unavailable. Bare hostnames are normalized to `https://`. |
 | `COOLIFY_BRANCH` | Git branch deployed. |
 
 ## Custom JSON config (Docker mount)
