@@ -64,15 +64,28 @@ Two-layer Docker build:
 1. **Base image** (`Dockerfile.base`) — builds openclaw from source. Tagged `coollabsio/openclaw-base:<version>`.
 2. **Final image** (`Dockerfile`) — FROM base, adds nginx + env-to-config scripts. Tagged `coollabsio/openclaw:<version>`.
 
+## Image tags
+
+Images are published to Docker Hub and GHCR for both stable and beta OpenClaw releases:
+
+| Tag | Tracks | Example |
+|---|---|---|
+| `latest` | Latest stable release only | `coollabsio/openclaw:latest` |
+| `<version>` | An exact stable release | `coollabsio/openclaw:2026.7.1` |
+| `<version>-beta.<n>` | An exact beta release | `coollabsio/openclaw:2026.7.2-beta.3` |
+
+The hourly updater checks the newest stable release and the newest prerelease independently. Beta images are always published under their exact version and never move the `latest` tag.
+
 ## Files
 
 ```
-.github/workflows/auto-update.yml   — cron every 6h, check openclaw releases, build+push
+.github/workflows/auto-update.yml   — hourly stable/beta release check, build+push
 .github/workflows/build.yml         — CI on push/PR (build only, no push)
 Dockerfile.base                     — multi-stage: build openclaw from source → slim runtime
 Dockerfile                          — FROM base, add nginx + config scripts + entrypoint
 scripts/configure.js                — reads env vars, writes/patches openclaw.json
 scripts/entrypoint.sh               — container entrypoint: configure → nginx → gateway
+scripts/release-candidates.js       — select the latest stable and beta releases
 scripts/smoke.js                    — smoke test (openclaw --version)
 nginx/default.conf                  — reverse proxy :8080 → :18789, optional basic auth
 .dockerignore                       — standard ignores
@@ -83,14 +96,14 @@ nginx/default.conf                  — reverse proxy :8080 → :18789, optional
 
 ```
 Jobs:
-1. check-release        — fetch latest openclaw/openclaw release, skip if image exists
-2. build-base           — matrix amd64/arm64, build Dockerfile.base, push per-arch
+1. check-releases       — select latest stable + beta, skip images that already exist
+2. build-base           — matrix release/amd64/arm64, build Dockerfile.base, push per-arch
 3. merge-base-manifest  — merge into coollabsio/openclaw-base:<ver> + :latest
-4. build-final          — matrix amd64/arm64, build Dockerfile, push per-arch
+4. build-final          — matrix release/amd64/arm64, build Dockerfile, push per-arch
 5. merge-final-manifest — merge into coollabsio/openclaw:<ver> + :latest
 ```
 
-Triggers: `schedule: '0 */6 * * *'` + `workflow_dispatch` (version, force_rebuild, skip_latest_tag).
+The `:latest` manifest is added only for stable releases. Triggers: `schedule: '0 * * * *'` + `workflow_dispatch` (version, force_rebuild, skip_latest_tag).
 
 ## Secrets needed (repo settings)
 
@@ -433,6 +446,6 @@ Arrays are replaced, not concatenated. Provider API keys are always read from en
 
 ## Notes
 
-- Openclaw uses CalVer: `v2026.1.29` (roughly daily releases). Detected via GitHub Releases API.
+- Openclaw uses CalVer: `v2026.7.1` for stable releases and `v2026.7.2-beta.3` for prereleases. Detected via GitHub Releases API.
 - Using native `ubuntu-24.04-arm` runners for arm64 builds (same pattern as coollabsio/pocketbase).
 - Config is environment-driven: set env vars → restart container → config updates automatically.

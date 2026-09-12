@@ -8,7 +8,7 @@ on:
         type: number
         default: 10
       specific_version:
-        description: 'Or rebuild a specific version (e.g., 2026.1.29)'
+        description: 'Or rebuild a specific version (e.g., 2026.7.1 or 2026.7.2-beta.3)'
         type: string
         required: false
       force_rebuild:
@@ -27,28 +27,63 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       versions: ${{ steps.fetch.outputs.versions }}
-      latest_version: ${{ steps.fetch.outputs.latest_version }}
+      latest_stable_version: ${{ steps.fetch.outputs.latest_stable_version }}
     steps:
       - name: Fetch OpenClaw versions
         id: fetch
         env:
           GH_TOKEN: ${{ github.token }}
+          SPECIFIC_VERSION: ${{ inputs.specific_version }}
+          VERSION_COUNT: ${{ inputs.version_count }}
         run: |
-          if [ -n "${{ github.event.inputs.specific_version }}" ]; then
-            VERSION="${{ github.event.inputs.specific_version }}"
-            echo "versions=[\"$VERSION\"]" >> $GITHUB_OUTPUT
-            echo "latest_version=$VERSION" >> $GITHUB_OUTPUT
+          set -euo pipefail
+
+          API_URL="https://api.github.com/repos/openclaw/openclaw"
+          CURL_ARGS=(
+            --fail
+            --silent
+            --show-error
+            --location
+            --header "Accept: application/vnd.github+json"
+            --header "Authorization: Bearer ${GH_TOKEN}"
+            --header "X-GitHub-Api-Version: 2022-11-28"
+          )
+
+          if [ -n "$SPECIFIC_VERSION" ]; then
+            VERSION="${SPECIFIC_VERSION#v}"
+            if [[ ! "$VERSION" =~ ^[0-9]{4}\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+              echo "Invalid OpenClaw version: $SPECIFIC_VERSION" >&2
+              exit 1
+            fi
+
+            RELEASE_FILE="${RUNNER_TEMP}/release.json"
+            curl "${CURL_ARGS[@]}" \
+              "${API_URL}/releases/tags/v${VERSION}" \
+              > "$RELEASE_FILE"
+
+            VERSIONS=$(jq -c '[.tag_name | ltrimstr("v")]' "$RELEASE_FILE")
+            LATEST_STABLE=$(jq -r \
+              'if .draft or .prerelease then "" else (.tag_name | ltrimstr("v")) end' \
+              "$RELEASE_FILE")
             echo "Building specific version: $VERSION"
           else
-            COUNT="${{ github.event.inputs.version_count || '10' }}"
-            VERSIONS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
-              "https://api.github.com/repos/openclaw/openclaw/releases?per_page=$COUNT" \
-              | jq -c '[.[].tag_name | ltrimstr("v")]')
-            LATEST=$(echo "$VERSIONS" | jq -r '.[0]')
-            echo "versions=$VERSIONS" >> $GITHUB_OUTPUT
-            echo "latest_version=$LATEST" >> $GITHUB_OUTPUT
+            COUNT="${VERSION_COUNT:-10}"
+            RELEASES_FILE="${RUNNER_TEMP}/releases.json"
+            curl "${CURL_ARGS[@]}" \
+              "${API_URL}/releases?per_page=${COUNT}" \
+              > "$RELEASES_FILE"
+
+            VERSIONS=$(jq -c \
+              '[.[] | select(.draft == false) | .tag_name | ltrimstr("v")]' \
+              "$RELEASES_FILE")
+            LATEST_STABLE=$(jq -r \
+              '[.[] | select(.draft == false and .prerelease == false)][0].tag_name // "" | ltrimstr("v")' \
+              "$RELEASES_FILE")
             echo "Building versions: $VERSIONS"
           fi
+
+          echo "versions=$VERSIONS" >> "$GITHUB_OUTPUT"
+          echo "latest_stable_version=$LATEST_STABLE" >> "$GITHUB_OUTPUT"
 
   check-base:
     runs-on: ubuntu-24.04
@@ -266,7 +301,7 @@ jobs:
       - name: Create final manifest on ${{ env.GITHUB_REGISTRY }}
         run: |
           VERSION="${{ matrix.version }}"
-          LATEST="${{ needs.get-versions.outputs.latest_version }}"
+          LATEST="${{ needs.get-versions.outputs.latest_stable_version }}"
           IMAGE="${{ env.GITHUB_REGISTRY }}/${{ env.IMAGE_NAME }}"
 
           TAGS="-t ${IMAGE}:${VERSION}"
@@ -282,7 +317,7 @@ jobs:
       - name: Create final manifest on ${{ env.DOCKER_REGISTRY }}
         run: |
           VERSION="${{ matrix.version }}"
-          LATEST="${{ needs.get-versions.outputs.latest_version }}"
+          LATEST="${{ needs.get-versions.outputs.latest_stable_version }}"
           IMAGE="${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}"
 
           TAGS="-t ${IMAGE}:${VERSION}"
@@ -303,7 +338,7 @@ jobs:
       - name: Generate summary
         run: |
           VERSIONS='${{ needs.get-versions.outputs.versions }}'
-          LATEST="${{ needs.get-versions.outputs.latest_version }}"
+          LATEST="${{ needs.get-versions.outputs.latest_stable_version }}"
 
           echo "## Rebuild Complete" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
