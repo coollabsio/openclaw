@@ -115,7 +115,7 @@ Triggers: `schedule: '0 */6 * * *'` + `workflow_dispatch` (version, force_rebuil
 | `VENICE_API_KEY` | Venice AI API key (OpenAI-compatible). Configures Llama 3.3 70B. |
 | `MOONSHOT_API_KEY` | Moonshot API key (OpenAI-compatible). Configures Kimi K2.5. |
 | `KIMI_API_KEY` | Kimi Coding API key (Anthropic-compatible). Configures K2P5. |
-| `MINIMAX_API_KEY` | MiniMax API key (Anthropic-compatible). Configures MiniMax M2.1. |
+| `MINIMAX_API_KEY` | MiniMax API key (Anthropic-compatible). Configures MiniMax M3 and M2.7. |
 | `ZAI_API_KEY` | ZAI API key. Configures GLM models. |
 | `AI_GATEWAY_API_KEY` | Vercel AI Gateway API key. |
 | `OPENCODE_API_KEY` | OpenCode API key. Also accepted as `OPENCODE_ZEN_API_KEY`. |
@@ -331,6 +331,7 @@ If a channel env var is removed, that channel is cleaned from config on next sta
 | `ANTHROPIC_BASE_URL` | Override Anthropic API base URL specifically. |
 | `MOONSHOT_BASE_URL` | Override Moonshot API base URL. Default: `https://api.moonshot.ai/v1`. |
 | `KIMI_BASE_URL` | Override Kimi Coding API base URL. Default: `https://api.moonshot.ai/anthropic`. |
+| `MINIMAX_BASE_URL` | Override MiniMax API base URL. Default: `https://api.minimax.io/anthropic` (global). Set to `https://api.minimaxi.com/anthropic` for the China endpoint. |
 
 ### Extra system packages (optional)
 

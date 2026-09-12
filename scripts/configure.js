@@ -199,15 +199,18 @@ if (process.env.VENICE_API_KEY) {
 }
 
 // MiniMax (Anthropic-compatible)
+// Global endpoint: https://api.minimax.io/anthropic
+// China endpoint:  https://api.minimaxi.com/anthropic (override with MINIMAX_BASE_URL)
 if (process.env.MINIMAX_API_KEY) {
   console.log("[configure] configuring MiniMax provider");
   ensure(config, "models", "providers");
   config.models.providers.minimax = {
     api: "anthropic-messages",
     apiKey: process.env.MINIMAX_API_KEY,
-    baseUrl: "https://api.minimax.io/anthropic",
+    baseUrl: (process.env.MINIMAX_BASE_URL || "https://api.minimax.io/anthropic").replace(/\/+$/, ""),
     models: [
-      { id: "MiniMax-M2.1", name: "MiniMax M2.1", contextWindow: 200000 },
+      { id: "MiniMax-M3", name: "MiniMax M3", contextWindow: 1000000 },
+      { id: "MiniMax-M2.7", name: "MiniMax M2.7", contextWindow: 204800 },
     ],
   };
 } else {
@@ -346,7 +349,7 @@ const primaryCandidates = [
   [process.env.VENICE_API_KEY,         "venice/llama-3.3-70b"],
   [process.env.MOONSHOT_API_KEY,       "moonshot/kimi-k2.5"],
   [process.env.KIMI_API_KEY,           "kimi-coding/k2p5"],
-  [process.env.MINIMAX_API_KEY,        "minimax/MiniMax-M2.1"],
+  [process.env.MINIMAX_API_KEY,        "minimax/MiniMax-M3"],
   [process.env.SYNTHETIC_API_KEY,      "synthetic/hf:MiniMaxAI/MiniMax-M2.1"],
   [process.env.ZAI_API_KEY,            "zai/glm-4.7"],
   [process.env.AI_GATEWAY_API_KEY,     "vercel-ai-gateway/anthropic/claude-opus-4.5"],
