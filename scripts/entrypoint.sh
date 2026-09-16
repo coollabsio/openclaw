@@ -148,11 +148,71 @@ AUTH_USERNAME="${AUTH_USERNAME:-admin}"
 NGINX_CONF="/etc/nginx/conf.d/openclaw.conf"
 
 AUTH_BLOCK=""
+# Bearer-aware pieces. Empty unless basic auth is on, so the no-auth path below
+# generates a byte-identical config to before.
+BEARER_MAPS=""
+UPSTREAM_AUTH="\"Bearer ${GATEWAY_TOKEN}\""
+PROXY_ARGS_MAP="map \"\$ocw_has_token:\$args\" \$ocw_proxy_args {
+    ~^1:    \$args;
+    ~^0:.+  \"\$args&token=${GATEWAY_TOKEN}\";
+    default \"token=${GATEWAY_TOKEN}\";
+}"
+
 if [ -n "$AUTH_PASSWORD" ]; then
   echo "[entrypoint] setting up nginx basic auth (user: $AUTH_USERNAME)"
   htpasswd -bc /etc/nginx/.htpasswd "$AUTH_USERNAME" "$AUTH_PASSWORD" 2>/dev/null
-  AUTH_BLOCK='auth_basic "Openclaw";
+  AUTH_BLOCK='auth_basic $ocw_auth_realm;
         auth_basic_user_file /etc/nginx/.htpasswd;'
+
+  # The Control UI authenticates to the gateway with `Authorization: Bearer
+  # <token>`. A request carries only one Authorization header, so on every fetch
+  # the UI makes itself that Bearer replaces the browser's Basic credentials,
+  # auth_basic rejects it, and the 401 + WWW-Authenticate re-prompts the user.
+  # Entering the correct password cannot help: the next UI fetch overwrites the
+  # header again. Same class of bug as #37 (webhook Authorization header), fixed
+  # the same way: skip basic auth and let the gateway validate the token.
+  #
+  # Scoped to routes the gateway itself authenticates. "/" is deliberately NOT
+  # in the list: the gateway serves the UI shell unauthenticated, so exempting
+  # it would let any bogus Bearer walk straight past basic auth.
+  BEARER_MAPS="map \$http_authorization \$ocw_is_bearer {
+    default      0;
+    \"~*^Bearer \" 1;
+}
+
+map \$uri \$ocw_is_gateway_route {
+    default                       0;
+    \"~^/api/\"                     1;
+    \"~^/__openclaw__/\"            1;
+    \"~^/rpc\"                      1;
+    \"~^/control-ui-config\\.json\$\" 1;
+}
+
+map \"\$ocw_is_bearer\$ocw_is_gateway_route\" \$ocw_bearer_passthru {
+    default 0;
+    \"11\"    1;
+}
+
+map \$ocw_bearer_passthru \$ocw_auth_realm {
+    default \"Openclaw\";
+    1       \"off\";
+}
+
+map \$ocw_bearer_passthru \$ocw_upstream_auth {
+    default \"Bearer ${GATEWAY_TOKEN}\";
+    1       \$http_authorization;
+}
+
+"
+  UPSTREAM_AUTH="\$ocw_upstream_auth"
+  # Never append nginx's own token to a passthrough request either, or the
+  # carve-out would hand out authenticated access instead of delegating it.
+  PROXY_ARGS_MAP="map \"\$ocw_bearer_passthru:\$ocw_has_token:\$args\" \$ocw_proxy_args {
+    \"~^1:[01]:(?<ocw_bargs>.*)\$\"  \$ocw_bargs;
+    \"~^0:1:\"                  \$args;
+    \"~^0:0:.+\"                \"\$args&token=${GATEWAY_TOKEN}\";
+    default                   \"token=${GATEWAY_TOKEN}\";
+}"
 else
   echo "[entrypoint] no AUTH_PASSWORD set, nginx will not require authentication"
 fi
@@ -222,11 +282,7 @@ map \$arg_token \$ocw_has_token {
     default 1;
 }
 
-map "\$ocw_has_token:\$args" \$ocw_proxy_args {
-    ~^1:    \$args;
-    ~^0:.+  "\$args&token=${GATEWAY_TOKEN}";
-    default "token=${GATEWAY_TOKEN}";
-}
+${BEARER_MAPS}${PROXY_ARGS_MAP}
 
 server {
     listen ${PORT:-8080} default_server;
@@ -252,7 +308,7 @@ server {
         ${AUTH_BLOCK}
 
         proxy_pass http://127.0.0.1:${GATEWAY_PORT}\$uri?\$ocw_proxy_args;
-        proxy_set_header Authorization "Bearer ${GATEWAY_TOKEN}";
+        proxy_set_header Authorization ${UPSTREAM_AUTH};
 
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
