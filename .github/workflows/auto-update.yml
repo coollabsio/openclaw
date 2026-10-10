@@ -36,17 +36,29 @@ jobs:
     steps:
       - name: Get latest Openclaw release
         id: openclaw-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            VERSION="${{ github.event.inputs.version }}"
+          set -euo pipefail
+          if [ -n "$REQUESTED_VERSION" ]; then
+            VERSION="$REQUESTED_VERSION"
             echo "Using manually specified version: $VERSION"
           else
-            LATEST_RELEASE=$(curl -s https://api.github.com/repos/openclaw/openclaw/releases/latest | jq -r '.tag_name')
+            RELEASE=$(curl --fail --silent --show-error \
+              --retry 3 --retry-max-time 60 --max-time 30 \
+              --header "Authorization: Bearer ${GH_TOKEN}" \
+              https://api.github.com/repos/openclaw/openclaw/releases/latest)
+            LATEST_RELEASE=$(jq -er '.tag_name' <<< "$RELEASE")
             # Strip leading 'v' if present (openclaw uses v2026.1.29 format)
             VERSION=$(echo "$LATEST_RELEASE" | sed 's/^v//')
             echo "Latest Openclaw release: $VERSION"
           fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          if [[ ! "$VERSION" =~ ^[0-9]{4}\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "::error::Invalid Openclaw release version"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Check if image already exists
         id: check-image
