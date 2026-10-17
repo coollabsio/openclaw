@@ -30,22 +30,48 @@ env:
 jobs:
   check-release:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     outputs:
       version: ${{ steps.openclaw-release.outputs.version }}
       should_build: ${{ steps.check-image.outputs.exists == 'false' }}
     steps:
       - name: Get latest Openclaw release
         id: openclaw-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ -n "${{ github.event.inputs.version }}" ]; then
-            VERSION="${{ github.event.inputs.version }}"
+            VERSION=$(echo "${{ github.event.inputs.version }}" | sed 's/^v//')
             echo "Using manually specified version: $VERSION"
           else
-            LATEST_RELEASE=$(curl -s https://api.github.com/repos/openclaw/openclaw/releases/latest | jq -r '.tag_name')
+            CURL_ARGS=(-sSL --retry 3 --retry-delay 2 -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
+            if [ -n "$GITHUB_TOKEN" ]; then
+              CURL_ARGS+=(-H "Authorization: Bearer $GITHUB_TOKEN")
+            fi
+
+            RESPONSE=$(curl "${CURL_ARGS[@]}" https://api.github.com/repos/openclaw/openclaw/releases/latest) || {
+              echo "Error: Failed to fetch latest release from GitHub API" >&2
+              exit 1
+            }
+
+            LATEST_RELEASE=$(echo "$RESPONSE" | jq -r '.tag_name // empty' 2>/dev/null)
+            if [ -z "$LATEST_RELEASE" ] || [ "$LATEST_RELEASE" = "null" ]; then
+              echo "Error: Failed to get a valid release tag from GitHub API." >&2
+              echo "API Response: $RESPONSE" >&2
+              exit 1
+            fi
+
             # Strip leading 'v' if present (openclaw uses v2026.1.29 format)
             VERSION=$(echo "$LATEST_RELEASE" | sed 's/^v//')
             echo "Latest Openclaw release: $VERSION"
           fi
+
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ] || ! [[ "$VERSION" =~ ^[0-9a-zA-Z_][0-9a-zA-Z_.-]*$ ]]; then
+            echo "Error: Invalid version '$VERSION'" >&2
+            exit 1
+          fi
+
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Check if image already exists
