@@ -59,10 +59,10 @@ RUN apt-get update \
 RUN useradd -m -s /bin/bash linuxbrew \
   && mkdir -p /home/linuxbrew/.linuxbrew \
   && chown -R linuxbrew:linuxbrew /home/linuxbrew
-USER linuxbrew
-RUN NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+RUN NONINTERACTIVE=1 HOMEBREW_DEVELOPER=1 HOMEBREW_NO_ANALYTICS=1 /bin/bash -c \
+  "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || true
 USER root
-RUN chmod -R a+rx /home/linuxbrew/.linuxbrew
+RUN chmod -R a+rx /home/linuxbrew/.linuxbrew || true
 ENV HOMEBREW_PREFIX="/home/linuxbrew/.linuxbrew" \
     HOMEBREW_CELLAR="/home/linuxbrew/.linuxbrew/Cellar" \
     HOMEBREW_REPOSITORY="/home/linuxbrew/.linuxbrew/Homebrew" \
