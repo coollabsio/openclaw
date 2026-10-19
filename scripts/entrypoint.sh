@@ -106,14 +106,90 @@ mkdir -p "$STATE_DIR" "$WORKSPACE_DIR"
 mkdir -p "$STATE_DIR/agents/main/sessions" "$STATE_DIR/credentials"
 chmod 700 "$STATE_DIR"
 
-# Export state/workspace dirs so openclaw CLI + configure.js see them
+# Export state/workspace dirs so openclaw CLI + configure.js see them.
+# OPENCLAW_HOME is consulted before HOME. Pin both so a child that resets
+# HOME to the passwd home (/root) still resolves ~/.openclaw onto the volume.
+# Do not symlink /root/.openclaw at the state dir: doctor treats that as two
+# state directories and can split session history.
 export OPENCLAW_STATE_DIR="$STATE_DIR"
 export OPENCLAW_WORKSPACE_DIR="$WORKSPACE_DIR"
+export OPENCLAW_HOME="${STATE_DIR%/.openclaw}"
+export HOME="$OPENCLAW_HOME"
 
-# Set HOME so that ~/.openclaw resolves to $STATE_DIR directly.
-# This avoids "multiple state directories" warnings from openclaw doctor
-# (symlinks are detected as separate paths).
-export HOME="${STATE_DIR%/.openclaw}"
+# Sessions written before this pin landed under the account home
+# (/root/.openclaw), which is the container writable layer, not the volume.
+# Copy missing session databases onto the volume, then retire that directory
+# so the next start cannot keep appending outside the mount. Never replace a
+# file the volume already has, and never follow symlinks.
+account_home="$(getent passwd "$(id -u)" 2>/dev/null | awk -F: '{ print $6; exit }' || true)"
+legacy_state="${account_home%/}/.openclaw"
+if [ -n "$account_home" ] && [ -d "$legacy_state" ] && [ ! -L "$legacy_state" ]; then
+  legacy_real="$(readlink -f "$legacy_state" 2>/dev/null || true)"
+  state_real="$(readlink -f "$STATE_DIR" 2>/dev/null || true)"
+  if [ -n "$legacy_real" ] && [ "$legacy_real" != "$state_real" ]; then
+    migrated=0
+    for agent_dir in "$legacy_state"/agents/*; do
+      [ -d "$agent_dir" ] && [ ! -L "$agent_dir" ] || continue
+      agent_id="$(basename "$agent_dir")"
+      case "$agent_id" in
+        *[!A-Za-z0-9._-]*) continue ;;
+      esac
+      src_db="$agent_dir/agent/openclaw-agent.sqlite"
+      if [ -f "$src_db" ] && [ ! -L "$src_db" ]; then
+        dest_agent="$STATE_DIR/agents/$agent_id/agent"
+        dest_db="$dest_agent/openclaw-agent.sqlite"
+        # A database already on the volume wins. Do not stitch a WAL from /root
+        # onto a different database.
+        if [ ! -e "$dest_db" ] && [ ! -L "$dest_db" ]; then
+          mkdir -p "$dest_agent"
+          cp -a "$src_db" "$dest_db"
+          for sidecar in "$src_db"-*; do
+            [ -f "$sidecar" ] && [ ! -L "$sidecar" ] || continue
+            cp -a "$sidecar" "$dest_agent/$(basename "$sidecar")"
+          done
+          echo "[entrypoint] migrated chat history for agent $agent_id onto $STATE_DIR"
+          migrated=1
+        fi
+      fi
+      if [ -d "$agent_dir/sessions" ] && [ ! -L "$agent_dir/sessions" ]; then
+        while IFS= read -r -d '' session_file; do
+          rel="${session_file#"$agent_dir/sessions"/}"
+          case "$rel" in
+            *..*) continue ;;
+          esac
+          dest_file="$STATE_DIR/agents/$agent_id/sessions/$rel"
+          if [ -e "$dest_file" ] || [ -L "$dest_file" ]; then
+            continue
+          fi
+          mkdir -p "$(dirname "$dest_file")"
+          cp -a "$session_file" "$dest_file"
+          migrated=1
+        done < <(find -P "$agent_dir/sessions" -type f -print0)
+      fi
+    done
+    src_state_db="$legacy_state/state/openclaw.sqlite"
+    dest_state_db="$STATE_DIR/state/openclaw.sqlite"
+    if [ -f "$src_state_db" ] && [ ! -L "$src_state_db" ] && [ ! -e "$dest_state_db" ] && [ ! -L "$dest_state_db" ]; then
+      mkdir -p "$STATE_DIR/state"
+      cp -a "$src_state_db" "$dest_state_db"
+      for sidecar in "$src_state_db"-*; do
+        [ -f "$sidecar" ] && [ ! -L "$sidecar" ] || continue
+        cp -a "$sidecar" "$STATE_DIR/state/$(basename "$sidecar")"
+      done
+      echo "[entrypoint] migrated shared state database onto $STATE_DIR"
+      migrated=1
+    fi
+    # Retire the account-home store even when the volume already had the
+    # database. Leaving it in place keeps a second history outside the mount.
+    # The rename stays on the container layer until the container is removed.
+    legacy_db="$(find -P "$legacy_state" -type f -name 'openclaw-agent.sqlite' -print -quit 2>/dev/null || true)"
+    if [ "$migrated" -eq 1 ] || [ -n "$legacy_db" ]; then
+      chmod 700 "$STATE_DIR"
+      mv "$legacy_state" "${legacy_state}.migrated.$$"
+      echo "[entrypoint] retired ephemeral state dir $legacy_state (not on the /data volume)"
+    fi
+  fi
+fi
 
 # ── Run custom init script (if provided) ─────────────────────────────────────
 INIT_SCRIPT="${OPENCLAW_DOCKER_INIT_SCRIPT:-}"
