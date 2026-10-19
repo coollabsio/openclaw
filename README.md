@@ -42,7 +42,7 @@ Each browser profile has to be approved once before the Control UI will connect.
 1. Sign in with HTTP basic auth (`AUTH_USERNAME` / `AUTH_PASSWORD`).
 2. Enter the gateway WebSocket URL and `OPENCLAW_GATEWAY_TOKEN`, then choose **Connect**. On Coolify the URL is the application's `wss://` address (same host as the Control UI, `wss` when the site is served over HTTPS).
 3. The page shows **Approve this browser** and a request id.
-4. In the container terminal, list pending requests and approve that id:
+4. In the container terminal, list pending requests and approve that id. A Coolify terminal and `docker exec` already have `OPENCLAW_GATEWAY_TOKEN`. Leave `OPENCLAW_GATEWAY_URL` unset and do not pass `--url`. The CLI then uses the loopback gateway at `ws://127.0.0.1:18789` (the process nginx proxies to). `HOME` can stay `/root`; the token in the environment is enough. `HOME=/data` also works, because that reads `/data/.openclaw/openclaw.json`.
 
    ```bash
    openclaw devices list
@@ -51,7 +51,28 @@ Each browser profile has to be approved once before the Control UI will connect.
 
    `openclaw devices approve` with no id only prints a preview and exits 1. Pass the request id from the page (or from `openclaw devices list`).
 
-5. Approval is stored for that browser profile. A different profile, or a browser that has cleared site data, needs the same steps again.
+5. Approval is stored for that browser profile. The page connects on its own (or use **Check now**). A different profile, or a browser that has cleared site data, needs the same steps again.
+
+#### `scope upgrade pending approval` / pairing dead end
+
+On `coollabsio/openclaw:2026.5.7` the browser could show `device pairing required (requestId: …)` while `openclaw devices approve` inside the container failed with:
+
+```text
+gateway connect failed: GatewayClientRequestError: scope upgrade pending approval (requestId: …)
+```
+
+That CLI was connecting as its own device and requesting operator scopes that device did not have yet, so the same command could not approve the browser or itself.
+
+OpenClaw 2026.10.5 does not do that on the loopback gateway when `OPENCLAW_GATEWAY_TOKEN` is set. The commands above approve the browser request. Verified on an image built from this repo against OpenClaw 2026.10.5: basic auth, gateway token, **Approve this browser**, then `openclaw devices list` and `openclaw devices approve <requestId>` from `docker exec` (default `HOME=/root`, no `--url`). The Control UI then reaches Home. No `scope upgrade pending approval`, and no `401` with `WWW-Authenticate: Basic` after the page loaded.
+
+If approval still fails, match the message:
+
+| What you see | What to run |
+|---|---|
+| `openclaw devices approve` with no id prints the pending request and exits 1 | Rerun with the request id from that preview or from the browser. |
+| `gateway rejected websocket upgrade (HTTP 401)` | The CLI is aimed at nginx (`:8080` or the public Coolify `wss://` URL). Basic auth rejects it before the gateway. Unset `OPENCLAW_GATEWAY_URL`, drop `--url`, and rerun so the target stays `ws://127.0.0.1:18789`. `gateway.trustedProxies` is for browser traffic through nginx; it does not apply to this direct loopback connection. |
+| `gateway device.pair.list requires credentials` or `gateway url override requires explicit credentials` | Pass the container's `OPENCLAW_GATEWAY_TOKEN` with `--token` when you also pass `--url`. With no `--url`, the env token is used. If the token env var is missing, `HOME=/data` lets the CLI read the token from `/data/.openclaw/openclaw.json`. |
+| `This device can't approve its own scope upgrade` or `scope upgrade pending approval` | The CLI authenticated as a paired device and asked for scopes that device does not have. Approve the **browser** request id from `openclaw devices list` on the loopback gateway with `OPENCLAW_GATEWAY_TOKEN` set and no `--url`. The CLI cannot approve its own pending scope upgrade. |
 
 ## Architecture
 
