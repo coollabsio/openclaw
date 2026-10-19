@@ -11,6 +11,11 @@ services:
       - AUTH_USERNAME=${AUTH_USERNAME:-admin}
       - AUTH_PASSWORD=${AUTH_PASSWORD}
       - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
+      # Chat history is /data/.openclaw/agents/<agentId>/agent/openclaw-agent.sqlite.
+      - HOME=/data
+      - OPENCLAW_HOME=/data
+      - OPENCLAW_STATE_DIR=/data/.openclaw
+      - OPENCLAW_WORKSPACE_DIR=/data/workspace
       # Browser sidecar. See docker-compose.yml for the 9223 proxy and SSRF allowlist.
       - BROWSER_CDP_URL=http://browser:9223
       - BROWSER_DEFAULT_PROFILE=openclaw
@@ -18,6 +23,7 @@ services:
       # Allowed Origins
       - OPENCLAW_ALLOWED_ORIGINS=${OPENCLAW_ALLOWED_ORIGINS}
     volumes:
+      # Required. Chat history lives under /data/.openclaw on this volume.
       - openclaw-data:/data
     depends_on:
       browser:

@@ -22,6 +22,15 @@ ENV NPM_CONFIG_PREFIX="/data/npm-global" \
     GOPATH="/data/go" \
     PATH="/data/npm-global/bin:/data/uv/tools/bin:/data/go/bin:${PATH}"
 
+# The node image sets HOME=/root. OpenClaw stores chat history under
+# ~/.openclaw unless these are set for every process, including `docker exec`
+# and Coolify terminals, which do not inherit entrypoint exports. /root is not
+# on the /data volume, so those sessions disappear when the container is recreated.
+ENV HOME=/data \
+    OPENCLAW_HOME=/data \
+    OPENCLAW_STATE_DIR=/data/.openclaw \
+    OPENCLAW_WORKSPACE_DIR=/data/workspace
+
 ENV PORT=8080
 EXPOSE 8080
 
