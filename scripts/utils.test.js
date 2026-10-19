@@ -19,6 +19,17 @@ const {
   normalizeCoolifyOrigin,
   normalizeCoolifyOrigins,
   coolifyAllowedOrigins,
+  MINIMAX_GLOBAL_BASE_URL,
+  MINIMAX_CN_BASE_URL,
+  MINIMAX_PRIMARY_MODEL,
+  minimaxBaseUrl,
+  minimaxModels,
+  normalizeOllamaBaseUrl,
+  readCustomOllamaModels,
+  applyOllamaBaseUrl,
+  restoreCustomOllamaModels,
+  ollamaPrimaryModel,
+  reconcileStaleOllamaPrimary,
   OPENAI_COMPATIBLE_PROVIDER_ID,
   resolveOpenAICompatibleProvider,
 } = require('./utils');
@@ -320,6 +331,149 @@ eq(
   readConfiguredOrigins({}),
   [],
   'configure.js adds no origins when Coolify variables are unset'
+);
+
+// ── MiniMax catalog ─────────────────────────────────────────────────────────
+
+console.log('minimax');
+
+eq(MINIMAX_GLOBAL_BASE_URL, 'https://api.minimax.io/anthropic', 'global MiniMax base URL');
+eq(MINIMAX_CN_BASE_URL, 'https://api.minimaxi.com/anthropic', 'China MiniMax base URL');
+eq(MINIMAX_PRIMARY_MODEL, 'minimax/MiniMax-M3', 'auto primary is MiniMax-M3');
+
+eq(minimaxBaseUrl(undefined), MINIMAX_GLOBAL_BASE_URL, 'missing base URL uses global');
+eq(minimaxBaseUrl(null), MINIMAX_GLOBAL_BASE_URL, 'null base URL uses global');
+eq(minimaxBaseUrl(''), MINIMAX_GLOBAL_BASE_URL, 'empty base URL uses global');
+eq(minimaxBaseUrl('   '), MINIMAX_GLOBAL_BASE_URL, 'whitespace base URL uses global');
+eq(minimaxBaseUrl(MINIMAX_CN_BASE_URL), MINIMAX_CN_BASE_URL, 'China base URL is kept');
+eq(
+  minimaxBaseUrl(`${MINIMAX_CN_BASE_URL}/`),
+  MINIMAX_CN_BASE_URL,
+  'one trailing slash is stripped'
+);
+eq(
+  minimaxBaseUrl(`  ${MINIMAX_GLOBAL_BASE_URL}///  `),
+  MINIMAX_GLOBAL_BASE_URL,
+  'surrounding space and extra slashes are stripped'
+);
+
+const minimaxCatalog = minimaxModels();
+eq(
+  minimaxCatalog.map((model) => model.id),
+  ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.1'],
+  'catalog is M3, M2.7, and legacy M2.1'
+);
+
+const minimaxM3 = minimaxCatalog[0];
+eq(minimaxM3.name, 'MiniMax M3', 'M3 display name');
+eq(minimaxM3.reasoning, true, 'M3 is a reasoning model');
+eq(minimaxM3.input, ['text', 'image'], 'M3 accepts text and image');
+eq(minimaxM3.compat, { codeMode: 'preferred' }, 'M3 prefers code mode');
+eq(
+  minimaxM3.cost,
+  { input: 0.6, output: 2.4, cacheRead: 0.12, cacheWrite: 0 },
+  'M3 cost matches upstream'
+);
+eq(minimaxM3.contextWindow, 1000000, 'M3 context window is 1,000,000');
+eq(minimaxM3.maxTokens, 131072, 'M3 maxTokens is 131072');
+
+const minimaxM27 = minimaxCatalog[1];
+eq(minimaxM27.reasoning, true, 'M2.7 is a reasoning model');
+eq(minimaxM27.input, ['text'], 'M2.7 is text only');
+eq(minimaxM27.contextWindow, 204800, 'M2.7 context window is 204,800');
+eq(minimaxM27.maxTokens, 131072, 'M2.7 maxTokens is 131072');
+eq(
+  minimaxM27.cost,
+  { input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0.375 },
+  'M2.7 cost matches upstream'
+);
+assert(minimaxM27.compat === undefined, 'M2.7 has no code-mode compat flag');
+
+const minimaxM21 = minimaxCatalog[2];
+eq(minimaxM21.name, 'MiniMax M2.1', 'M2.1 display name');
+eq(minimaxM21.reasoning, true, 'M2.1 stays a reasoning model');
+eq(minimaxM21.input, ['text'], 'M2.1 is text only');
+eq(minimaxM21.contextWindow, 204800, 'M2.1 context window is 204,800');
+eq(minimaxM21.maxTokens, 131072, 'M2.1 maxTokens is 131072');
+
+const mutated = minimaxModels();
+mutated[0].input.push('video');
+mutated[0].cost.input = 0;
+eq(minimaxModels()[0].input, ['text', 'image'], 'catalog input is copied per call');
+eq(minimaxModels()[0].cost.input, 0.6, 'catalog cost is copied per call');
+
+function readMinimaxConfig(env, persisted) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-minimax-'));
+  const configPath = path.join(dir, 'openclaw.json');
+  try {
+    if (persisted) {
+      fs.writeFileSync(configPath, JSON.stringify(persisted));
+    }
+    const result = spawnSync(process.execPath, [path.join(__dirname, 'configure.js')], {
+      encoding: 'utf8',
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        OPENCLAW_STATE_DIR: dir,
+        OPENCLAW_WORKSPACE_DIR: path.join(dir, 'workspace'),
+        OPENCLAW_CONFIG_PATH: configPath,
+        OPENCLAW_CUSTOM_CONFIG: path.join(dir, 'missing-custom.json'),
+        MINIMAX_API_KEY: 'test-minimax-key',
+        ...env,
+      },
+    });
+    assert(result.status === 0, `configure.js MiniMax exits 0 (${JSON.stringify(env || {})})`);
+    if (result.status !== 0) {
+      console.error(result.stdout);
+      console.error(result.stderr);
+      return null;
+    }
+    return JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+console.log('configure.js MiniMax provider');
+
+const minimaxDefault = readMinimaxConfig();
+eq(
+  minimaxDefault && minimaxDefault.models.providers.minimax,
+  {
+    api: 'anthropic-messages',
+    apiKey: 'test-minimax-key',
+    baseUrl: MINIMAX_GLOBAL_BASE_URL,
+    models: minimaxModels(),
+  },
+  'configure.js writes the MiniMax catalog and global base URL'
+);
+eq(
+  minimaxDefault && minimaxDefault.agents.defaults.model.primary,
+  MINIMAX_PRIMARY_MODEL,
+  'configure.js auto-selects MiniMax-M3 when no primary is saved'
+);
+
+const minimaxChina = readMinimaxConfig({
+  MINIMAX_BASE_URL: `${MINIMAX_CN_BASE_URL}/`,
+});
+eq(
+  minimaxChina && minimaxChina.models.providers.minimax.baseUrl,
+  MINIMAX_CN_BASE_URL,
+  'configure.js applies a China MINIMAX_BASE_URL and strips the trailing slash'
+);
+
+const minimaxKept = readMinimaxConfig({}, {
+  agents: { defaults: { model: { primary: 'minimax/MiniMax-M2.1' } } },
+});
+eq(
+  minimaxKept && minimaxKept.agents.defaults.model.primary,
+  'minimax/MiniMax-M2.1',
+  'configure.js keeps a saved MiniMax-M2.1 primary'
+);
+assert(
+  minimaxKept
+    && minimaxKept.models.providers.minimax.models.some((model) => model.id === 'MiniMax-M2.1'),
+  'saved M2.1 primary still has a catalog entry'
 );
 
 // ── REGEX patterns ──────────────────────────────────────────────────────────
@@ -695,7 +849,7 @@ function providerResult(input) {
 // configure.js must call the helper. These spawn the script instead of copying its logic.
 console.log('configure.js OpenAI-compatible provider');
 
-function runConfigure(env, customConfig) {
+function runOpenAICompatibleConfigure(env, customConfig) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-openai-compatible-'));
   const customPath = path.join(dir, 'custom.json');
   if (customConfig !== undefined) {
@@ -727,7 +881,7 @@ function runConfigure(env, customConfig) {
 }
 
 {
-  const run = runConfigure({ OPENAI_COMPATIBLE_API_KEY: SECRET });
+  const run = runOpenAICompatibleConfigure({ OPENAI_COMPATIBLE_API_KEY: SECRET });
   eq(run.status, 1, 'configure.js rejects an API key without base URL and model');
   assert(run.output.includes('OPENAI_COMPATIBLE_BASE_URL'), 'configure.js warning names the missing base URL');
   assert(run.output.includes('OPENAI_COMPATIBLE_MODEL'), 'configure.js warning names the missing model');
@@ -737,7 +891,7 @@ function runConfigure(env, customConfig) {
 }
 
 {
-  const run = runConfigure({
+  const run = runOpenAICompatibleConfigure({
     OPENAI_COMPATIBLE_BASE_URL: 'http://127.0.0.1:8000/v1/',
     OPENAI_COMPATIBLE_MODEL: 'local-model',
   });
@@ -751,7 +905,7 @@ function runConfigure(env, customConfig) {
 }
 
 {
-  const run = runConfigure({
+  const run = runOpenAICompatibleConfigure({
     OPENAI_COMPATIBLE_API_KEY: SECRET,
     OPENAI_COMPATIBLE_BASE_URL: 'http://litellm:4000/v1',
     OPENAI_COMPATIBLE_MODEL: 'new-model',
@@ -780,7 +934,7 @@ function runConfigure(env, customConfig) {
 }
 
 {
-  const run = runConfigure({
+  const run = runOpenAICompatibleConfigure({
     ANTHROPIC_API_KEY: 'test-key',
     OPENAI_COMPATIBLE_BASE_URL: 'https://proxy.example.com/v1',
     OPENAI_COMPATIBLE_MODEL: 'llama',
@@ -789,6 +943,374 @@ function runConfigure(env, customConfig) {
   assert(run.output.includes('OPENAI_COMPATIBLE_API_KEY'), 'configure.js warns when a public URL has no key');
   assert(run.written.models.providers['openai-compatible'].apiKey === undefined, 'public provider is written without a key');
   eq(run.written.agents.defaults.model.primary, 'anthropic/claude-opus-4-5-20251101', 'Anthropic stays ahead of the custom provider');
+}
+
+// ── Ollama provider ─────────────────────────────────────────────────────────
+
+console.log('ollama provider');
+
+const QWEN = { id: 'qwen3.5:9b', name: 'Qwen 3.5 9B', contextWindow: 32768 };
+const MISTRAL = { id: 'mistral', name: 'Mistral' };
+const LLAMA = { id: 'llama3.3', name: 'Llama 3.3', contextWindow: 128000 };
+
+eq(normalizeOllamaBaseUrl('http://host:11434/'), 'http://host:11434/v1', 'trailing slash gets /v1');
+eq(normalizeOllamaBaseUrl('http://host:11434'), 'http://host:11434/v1', 'bare host gets /v1');
+eq(normalizeOllamaBaseUrl('http://host:11434/v1'), 'http://host:11434/v1', 'existing /v1 is kept');
+eq(normalizeOllamaBaseUrl('http://host:11434/v1/'), 'http://host:11434/v1', 'trailing slash after /v1 is stripped');
+eq(normalizeOllamaBaseUrl(''), '', 'empty url stays empty');
+eq(normalizeOllamaBaseUrl('///'), '', 'slash-only url stays empty');
+eq(normalizeOllamaBaseUrl(undefined), '', 'missing url stays empty');
+
+// Fresh install: no provider yet, env supplies the URL.
+{
+  const fresh = {};
+  eq(
+    applyOllamaBaseUrl(fresh, 'http://host.docker.internal:11434/'),
+    'http://host.docker.internal:11434/v1',
+    'fresh install returns normalized base url'
+  );
+  eq(fresh.models.providers.ollama, {
+    api: 'openai-completions',
+    baseUrl: 'http://host.docker.internal:11434/v1',
+    models: [LLAMA],
+  }, 'fresh install installs the default llama3.3 catalog');
+  eq(ollamaPrimaryModel(fresh), 'ollama/llama3.3', 'fresh install primary is ollama/llama3.3');
+}
+
+// Default model objects are not shared across configs.
+{
+  const a = {};
+  const b = {};
+  applyOllamaBaseUrl(a, 'http://a:11434');
+  applyOllamaBaseUrl(b, 'http://b:11434');
+  a.models.providers.ollama.models.push({ id: 'extra' });
+  eq(b.models.providers.ollama.models, [LLAMA], 'default catalog is not shared between configs');
+}
+
+// Custom JSON models are kept; OLLAMA_BASE_URL updates baseUrl only.
+{
+  const custom = {
+    models: {
+      providers: {
+        ollama: {
+          api: 'openai-completions',
+          baseUrl: 'http://custom:11434/v1',
+          apiKey: 'ollama',
+          models: [QWEN],
+        },
+        anthropic: { api: 'anthropic' },
+      },
+    },
+  };
+  const customModels = readCustomOllamaModels(custom);
+  applyOllamaBaseUrl(custom, 'http://ollama:11434');
+  restoreCustomOllamaModels(custom, customModels);
+  eq(custom.models.providers.ollama, {
+    api: 'openai-completions',
+    baseUrl: 'http://ollama:11434/v1',
+    apiKey: 'ollama',
+    models: [QWEN],
+  }, 'custom models and apiKey survive a baseUrl override');
+  eq(custom.models.providers.anthropic, { api: 'anthropic' }, 'other providers are left alone');
+  eq(ollamaPrimaryModel(custom), 'ollama/qwen3.5:9b', 'automatic primary is the first custom model');
+}
+
+// Saved default catalog after deepMerge, then custom models win.
+{
+  const custom = {
+    models: {
+      providers: {
+        ollama: {
+          api: 'openai-completions',
+          baseUrl: 'http://custom:11434/v1',
+          apiKey: 'ollama',
+          models: [QWEN, MISTRAL],
+        },
+      },
+    },
+  };
+  const customModels = readCustomOllamaModels(custom);
+  const merged = {
+    models: {
+      providers: {
+        ollama: {
+          api: 'openai-completions',
+          baseUrl: 'http://saved:11434/v1',
+          apiKey: 'ollama',
+          models: [LLAMA],
+        },
+      },
+    },
+    agents: { defaults: { model: { primary: 'ollama/llama3.3' } } },
+  };
+  applyOllamaBaseUrl(merged, 'http://ollama:11434/');
+  restoreCustomOllamaModels(merged, customModels);
+  eq(merged.models.providers.ollama.models, [QWEN, MISTRAL], 'custom models replace the stale saved default');
+  eq(merged.models.providers.ollama.baseUrl, 'http://ollama:11434/v1', 'env baseUrl still wins over the saved url');
+  eq(merged.models.providers.ollama.apiKey, 'ollama', 'apiKey on the saved provider is kept');
+  eq(
+    reconcileStaleOllamaPrimary(merged, merged.agents.defaults.model.primary),
+    'ollama/qwen3.5:9b',
+    'stale ollama/llama3.3 primary follows the first custom model'
+  );
+  eq(ollamaPrimaryModel(merged), 'ollama/qwen3.5:9b', 'auto primary matches the first custom model');
+}
+
+// OLLAMA_BASE_URL override does not replace models the user saved directly.
+{
+  const saved = {
+    models: {
+      providers: {
+        ollama: {
+          api: 'openai-completions',
+          baseUrl: 'http://old:11434/v1',
+          apiKey: 'keep-me',
+          models: [MISTRAL],
+        },
+      },
+    },
+  };
+  applyOllamaBaseUrl(saved, 'http://10.0.0.5:11434/v1/');
+  restoreCustomOllamaModels(saved, readCustomOllamaModels(null));
+  eq(saved.models.providers.ollama, {
+    api: 'openai-completions',
+    baseUrl: 'http://10.0.0.5:11434/v1',
+    apiKey: 'keep-me',
+    models: [MISTRAL],
+  }, 'baseUrl override keeps models saved without a custom JSON file');
+  eq(
+    reconcileStaleOllamaPrimary(saved, 'ollama/mistral'),
+    'ollama/mistral',
+    'a non-default saved primary is not rewritten'
+  );
+}
+
+// Empty env does not invent a provider, and restore does not resurrect one.
+{
+  const untouched = { gateway: { port: 18789 } };
+  eq(applyOllamaBaseUrl(untouched, ''), '', 'empty OLLAMA_BASE_URL leaves config unchanged');
+  eq(untouched, { gateway: { port: 18789 } }, 'empty url does not add models');
+  restoreCustomOllamaModels(untouched, [QWEN]);
+  eq(untouched, { gateway: { port: 18789 } }, 'restore does not create an ollama provider');
+}
+
+eq(readCustomOllamaModels({}), null, 'missing ollama models are not a custom list');
+eq(
+  readCustomOllamaModels({ models: { providers: { ollama: { models: 'llama3.3' } } } }),
+  null,
+  'non-array models are not restored'
+);
+{
+  const source = { models: { providers: { ollama: { models: [QWEN] } } } };
+  const snapshot = readCustomOllamaModels(source);
+  source.models.providers.ollama.models[0] = MISTRAL;
+  eq(snapshot, [QWEN], 'custom model snapshot is a copy of the array');
+}
+
+eq(
+  ollamaPrimaryModel({ models: { providers: { ollama: { models: [{ id: '  ' }, { id: 'qwen' }] } } } }),
+  'ollama/qwen',
+  'blank model ids are skipped'
+);
+eq(
+  ollamaPrimaryModel({ models: { providers: { ollama: { models: [] } } } }),
+  null,
+  'empty model list has no automatic primary'
+);
+eq(
+  reconcileStaleOllamaPrimary(
+    { models: { providers: { ollama: { models: [LLAMA, QWEN] } } } },
+    'ollama/llama3.3'
+  ),
+  'ollama/llama3.3',
+  'stale primary stays when llama3.3 is still configured'
+);
+eq(
+  reconcileStaleOllamaPrimary(
+    { models: { providers: { ollama: { models: [QWEN] } } } },
+    'anthropic/claude-opus-4-5'
+  ),
+  'anthropic/claude-opus-4-5',
+  'non-ollama primary is unchanged'
+);
+
+function runConfigure(env, files = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-ollama-'));
+  const configPath = path.join(dir, 'openclaw.json');
+  const customPath = path.join(dir, 'custom.json');
+  try {
+    if (files.persisted !== undefined) {
+      fs.writeFileSync(configPath, JSON.stringify(files.persisted));
+    }
+    if (files.custom !== undefined) {
+      fs.writeFileSync(customPath, JSON.stringify(files.custom));
+    }
+    const result = spawnSync(process.execPath, [path.join(__dirname, 'configure.js')], {
+      encoding: 'utf8',
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        OPENCLAW_STATE_DIR: dir,
+        OPENCLAW_WORKSPACE_DIR: path.join(dir, 'workspace'),
+        OPENCLAW_CONFIG_PATH: configPath,
+        OPENCLAW_CUSTOM_CONFIG: files.custom !== undefined
+          ? customPath
+          : path.join(dir, 'missing-custom.json'),
+        ...env,
+      },
+    });
+    assert(result.status === 0, `configure.js exits 0 (${JSON.stringify(env)})`);
+    if (result.status !== 0) {
+      console.error(result.stdout);
+      console.error(result.stderr);
+      return null;
+    }
+    return JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function ollamaOf(config) {
+  return config && config.models && config.models.providers && config.models.providers.ollama;
+}
+
+function primaryOf(config) {
+  return config && config.agents && config.agents.defaults && config.agents.defaults.model
+    && config.agents.defaults.model.primary;
+}
+
+console.log('configure.js ollama');
+
+{
+  const fresh = runConfigure({ OLLAMA_BASE_URL: 'http://host.docker.internal:11434/' });
+  eq(ollamaOf(fresh), {
+    api: 'openai-completions',
+    baseUrl: 'http://host.docker.internal:11434/v1',
+    models: [LLAMA],
+  }, 'configure.js fresh install writes the default ollama provider');
+  eq(primaryOf(fresh), 'ollama/llama3.3', 'configure.js fresh install primary is ollama/llama3.3');
+}
+
+{
+  const written = runConfigure(
+    { OLLAMA_BASE_URL: 'http://ollama:11434' },
+    {
+      custom: {
+        models: {
+          providers: {
+            ollama: {
+              api: 'openai-completions',
+              baseUrl: 'http://custom:11434/v1',
+              apiKey: 'ollama',
+              models: [QWEN],
+            },
+          },
+        },
+      },
+    }
+  );
+  eq(ollamaOf(written), {
+    api: 'openai-completions',
+    baseUrl: 'http://ollama:11434/v1',
+    apiKey: 'ollama',
+    models: [QWEN],
+  }, 'configure.js custom JSON models survive and baseUrl comes from the env');
+  eq(primaryOf(written), 'ollama/qwen3.5:9b', 'configure.js auto primary is the first custom model');
+}
+
+{
+  const written = runConfigure(
+    { OLLAMA_BASE_URL: 'http://ollama:11434' },
+    {
+      custom: {
+        gateway: { port: 1111 },
+        models: {
+          providers: {
+            ollama: {
+              api: 'openai-completions',
+              baseUrl: 'http://custom:11434/v1',
+              apiKey: 'ollama',
+              models: [QWEN, MISTRAL],
+            },
+          },
+        },
+      },
+      persisted: {
+        gateway: { port: 2222 },
+        agents: { defaults: { model: { primary: 'ollama/llama3.3' } } },
+        models: {
+          providers: {
+            ollama: {
+              api: 'openai-completions',
+              baseUrl: 'http://saved:11434/v1',
+              models: [LLAMA],
+            },
+          },
+        },
+      },
+    }
+  );
+  eq(ollamaOf(written).models, [QWEN, MISTRAL], 'configure.js custom models win over the saved llama3.3 list');
+  eq(ollamaOf(written).baseUrl, 'http://ollama:11434/v1', 'configure.js env baseUrl wins over the saved url');
+  eq(ollamaOf(written).apiKey, 'ollama', 'configure.js keeps apiKey from the custom provider');
+  eq(written && written.gateway && written.gateway.port, 2222, 'persisted non-ollama keys still win the general merge');
+  eq(primaryOf(written), 'ollama/qwen3.5:9b', 'configure.js retargets a saved ollama/llama3.3 primary');
+}
+
+{
+  const written = runConfigure(
+    { OLLAMA_BASE_URL: 'http://10.0.0.5:11434/v1/' },
+    {
+      persisted: {
+        agents: { defaults: { model: { primary: 'ollama/mistral' } } },
+        models: {
+          providers: {
+            ollama: {
+              api: 'openai-completions',
+              baseUrl: 'http://old:11434/v1',
+              apiKey: 'keep-me',
+              models: [MISTRAL],
+            },
+          },
+        },
+      },
+    }
+  );
+  eq(ollamaOf(written), {
+    api: 'openai-completions',
+    baseUrl: 'http://10.0.0.5:11434/v1',
+    apiKey: 'keep-me',
+    models: [MISTRAL],
+  }, 'configure.js OLLAMA_BASE_URL override keeps a saved model list');
+  eq(primaryOf(written), 'ollama/mistral', 'configure.js keeps a saved primary that is not the stale default');
+}
+
+{
+  const written = runConfigure(
+    {
+      OLLAMA_BASE_URL: 'http://ollama:11434',
+      OPENCLAW_PRIMARY_MODEL: 'ollama/mistral',
+    },
+    {
+      custom: { models: { providers: { ollama: { models: [QWEN] } } } },
+      persisted: {
+        agents: { defaults: { model: { primary: 'ollama/llama3.3' } } },
+        models: { providers: { ollama: { models: [LLAMA] } } },
+      },
+    }
+  );
+  eq(primaryOf(written), 'ollama/mistral', 'OPENCLAW_PRIMARY_MODEL beats the stale ollama primary');
+  eq(ollamaOf(written).models, [QWEN], 'primary override still restores custom models');
+}
+
+{
+  const written = runConfigure(
+    { OLLAMA_BASE_URL: 'http://ollama:11434', ANTHROPIC_API_KEY: 'test-key' },
+    { custom: { models: { providers: { ollama: { models: [QWEN] } } } } }
+  );
+  eq(primaryOf(written), 'anthropic/claude-opus-4-5-20251101', 'a higher-priority provider still wins when no primary is set');
+  eq(ollamaOf(written).models, [QWEN], 'ollama custom models stay when another provider is primary');
 }
 
 // ── Results ─────────────────────────────────────────────────────────────────

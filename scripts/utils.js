@@ -310,6 +310,213 @@ function resolveOpenAICompatibleProvider(input) {
   };
 }
 
+// ── Ollama provider ─────────────────────────────────────────────────────────
+
+function isPlainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Strip trailing slashes and append `/v1` when it is not already there.
+ * Empty input (including a URL made only of slashes) returns ''.
+ * @param {string} ollamaUrl - OLLAMA_BASE_URL
+ * @returns {string}
+ */
+function normalizeOllamaBaseUrl(ollamaUrl) {
+  if (typeof ollamaUrl !== 'string') return '';
+  const stripped = ollamaUrl.replace(/\/+$/, '');
+  if (!stripped) return '';
+  return stripped.endsWith('/v1') ? stripped : `${stripped}/v1`;
+}
+
+function defaultOllamaProvider(baseUrl) {
+  return {
+    api: 'openai-completions',
+    baseUrl,
+    models: [{ id: 'llama3.3', name: 'Llama 3.3', contextWindow: 128000 }],
+  };
+}
+
+/**
+ * Model list from a mounted custom config, copied so the later persisted
+ * merge (which replaces arrays) cannot discard it. Null when unset.
+ * @param {object|null|undefined} customConfig
+ * @returns {object[]|null}
+ */
+function readCustomOllamaModels(customConfig) {
+  const models = customConfig?.models?.providers?.ollama?.models;
+  return Array.isArray(models) ? models.slice() : null;
+}
+
+/**
+ * Apply OLLAMA_BASE_URL. An existing ollama provider keeps every field
+ * except baseUrl. A missing provider gets the default llama3.3 catalog.
+ * @param {object} config - Config after the custom + persisted merge
+ * @param {string} ollamaUrl
+ * @returns {string} Normalized base URL, or '' when the env var is unset
+ */
+function applyOllamaBaseUrl(config, ollamaUrl) {
+  const base = normalizeOllamaBaseUrl(ollamaUrl);
+  if (!base || !isPlainObject(config)) return '';
+  if (!isPlainObject(config.models)) config.models = {};
+  if (!isPlainObject(config.models.providers)) config.models.providers = {};
+  if (!isPlainObject(config.models.providers.ollama)) {
+    config.models.providers.ollama = defaultOllamaProvider(base);
+  } else {
+    config.models.providers.ollama.baseUrl = base;
+  }
+  return base;
+}
+
+/**
+ * Put mounted custom ollama models back onto an existing provider.
+ * No-op when the custom file did not define a models array, or when the
+ * provider is absent (so a removed provider is not resurrected).
+ * @param {object} config
+ * @param {object[]|null} customModels - Result of readCustomOllamaModels
+ * @returns {object} config
+ */
+function restoreCustomOllamaModels(config, customModels) {
+  if (!Array.isArray(customModels)) return config;
+  const provider = config?.models?.providers?.ollama;
+  if (!isPlainObject(provider)) return config;
+  provider.models = customModels.slice();
+  return config;
+}
+
+/**
+ * Ids of configured ollama models, in list order, skipping blank ids.
+ * @param {object} config
+ * @returns {string[]}
+ */
+function ollamaModelIds(config) {
+  const models = config?.models?.providers?.ollama?.models;
+  if (!Array.isArray(models)) return [];
+  const ids = [];
+  for (const model of models) {
+    if (model && typeof model.id === 'string' && model.id.trim()) {
+      ids.push(model.id.trim());
+    }
+  }
+  return ids;
+}
+
+/**
+ * Automatic primary ref for the Ollama provider.
+ * First configured model, or ollama/llama3.3 when no models array is set.
+ * Returns null when the array is present but has no usable id.
+ * @param {object} config
+ * @returns {string|null}
+ */
+function ollamaPrimaryModel(config) {
+  const ids = ollamaModelIds(config);
+  if (ids.length > 0) return `ollama/${ids[0]}`;
+  const models = config?.models?.providers?.ollama?.models;
+  return Array.isArray(models) ? null : 'ollama/llama3.3';
+}
+
+/**
+ * A previous run stored primary "ollama/llama3.3" next to the default catalog.
+ * Once custom models replace that catalog, point the stale primary at the
+ * first configured model. Any other primary is left alone.
+ * @param {object} config
+ * @param {string} primary
+ * @returns {string}
+ */
+function reconcileStaleOllamaPrimary(config, primary) {
+  if (primary !== 'ollama/llama3.3') return primary;
+  const ids = ollamaModelIds(config);
+  if (ids.length === 0 || ids.includes('llama3.3')) return primary;
+  return `ollama/${ids[0]}`;
+}
+
+// ── MiniMax provider catalog ────────────────────────────────────────────────
+//
+// Anthropic-compatible chat endpoints (platform.minimax.io text-anthropic API):
+//   global: https://api.minimax.io/anthropic
+//   China:  https://api.minimaxi.com/anthropic
+//
+// Model ids and context windows match that API. Upstream OpenClaw's bundled
+// catalog (extensions/minimax) supplies the metadata below for M3 and M2.7:
+// reasoning, input, maxTokens 131072, M3 cost, and M3 compat.codeMode.
+//
+// MiniMax-M3 returns empty content when thinking is disabled. OpenClaw picks
+// adaptive thinking from the model id (`reasoning: true` is the catalog flag;
+// this image does not write a thinking override). M2.x thinking stays off
+// inside OpenClaw unless the user sets it, so reasoning_content is not leaked.
+//
+// MiniMax-M2.1 stays as a third entry. configure.js never overwrites a saved
+// primary, so users on minimax/MiniMax-M2.1 keep that ref — it has to remain
+// in the model list or the saved primary stops resolving. New installs with
+// no primary still auto-select MiniMax-M3.
+
+const MINIMAX_GLOBAL_BASE_URL = 'https://api.minimax.io/anthropic';
+const MINIMAX_CN_BASE_URL = 'https://api.minimaxi.com/anthropic';
+const MINIMAX_PRIMARY_MODEL = 'minimax/MiniMax-M3';
+const MINIMAX_MAX_TOKENS = 131072;
+
+const MINIMAX_MODEL_CATALOG = [
+  {
+    id: 'MiniMax-M3',
+    name: 'MiniMax M3',
+    reasoning: true,
+    input: ['text', 'image'],
+    compat: { codeMode: 'preferred' },
+    cost: { input: 0.6, output: 2.4, cacheRead: 0.12, cacheWrite: 0 },
+    contextWindow: 1000000,
+    maxTokens: MINIMAX_MAX_TOKENS,
+  },
+  {
+    id: 'MiniMax-M2.7',
+    name: 'MiniMax M2.7',
+    reasoning: true,
+    input: ['text'],
+    cost: { input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0.375 },
+    contextWindow: 204800,
+    maxTokens: MINIMAX_MAX_TOKENS,
+  },
+  {
+    id: 'MiniMax-M2.1',
+    name: 'MiniMax M2.1',
+    reasoning: true,
+    input: ['text'],
+    contextWindow: 204800,
+    maxTokens: MINIMAX_MAX_TOKENS,
+  },
+];
+
+/**
+ * Anthropic-compatible MiniMax chat base URL.
+ * Blank or non-string values use the global endpoint. Trailing slashes are removed.
+ * @param {string|undefined|null} rawValue - MINIMAX_BASE_URL
+ * @returns {string}
+ */
+function minimaxBaseUrl(rawValue) {
+  const trimmed = typeof rawValue === 'string' ? rawValue.trim() : '';
+  return (trimmed || MINIMAX_GLOBAL_BASE_URL).replace(/\/+$/, '');
+}
+
+/**
+ * Fresh MiniMax model list: M3, M2.7, then legacy M2.1.
+ * Each call returns new objects so a config write cannot mutate the catalog.
+ * @returns {object[]}
+ */
+function minimaxModels() {
+  return MINIMAX_MODEL_CATALOG.map((model) => {
+    const copy = {
+      id: model.id,
+      name: model.name,
+      reasoning: model.reasoning,
+      input: model.input.slice(),
+    };
+    if (model.compat) copy.compat = { ...model.compat };
+    if (model.cost) copy.cost = { ...model.cost };
+    copy.contextWindow = model.contextWindow;
+    copy.maxTokens = model.maxTokens;
+    return copy;
+  });
+}
+
 module.exports = {
   REGEX,
   ENV_VAR,
@@ -320,6 +527,17 @@ module.exports = {
   normalizeCoolifyOrigin,
   normalizeCoolifyOrigins,
   coolifyAllowedOrigins,
+  MINIMAX_GLOBAL_BASE_URL,
+  MINIMAX_CN_BASE_URL,
+  MINIMAX_PRIMARY_MODEL,
+  minimaxBaseUrl,
+  minimaxModels,
+  normalizeOllamaBaseUrl,
+  readCustomOllamaModels,
+  applyOllamaBaseUrl,
+  restoreCustomOllamaModels,
+  ollamaPrimaryModel,
+  reconcileStaleOllamaPrimary,
   OPENAI_COMPATIBLE_PROVIDER_ID,
   resolveOpenAICompatibleProvider,
 };

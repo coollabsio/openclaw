@@ -68,7 +68,7 @@ Two-layer Docker build:
 
 ```
 .github/workflows/auto-update.yml   — cron every 6h, check openclaw releases, build+push
-.github/workflows/build.yml         — CI on push/PR (build only, no push)
+.github/workflows/build.yml         — CI on push/PR; builds the latest upstream release (no push)
 Dockerfile.base                     — multi-stage: build openclaw from source → slim runtime
 Dockerfile                          — FROM base, add nginx + config scripts + entrypoint
 scripts/configure.js                — reads env vars, writes/patches openclaw.json
@@ -115,7 +115,7 @@ Triggers: `schedule: '0 */6 * * *'` + `workflow_dispatch` (version, force_rebuil
 | `VENICE_API_KEY` | Venice AI API key (OpenAI-compatible). Configures Llama 3.3 70B. |
 | `MOONSHOT_API_KEY` | Moonshot API key (OpenAI-compatible). Configures Kimi K2.5. |
 | `KIMI_API_KEY` | Kimi Coding API key (Anthropic-compatible). Configures K2P5. |
-| `MINIMAX_API_KEY` | MiniMax API key (Anthropic-compatible). Configures MiniMax M2.1. |
+| `MINIMAX_API_KEY` | MiniMax API key (Anthropic-compatible). Configures MiniMax M3 (default), M2.7, and M2.1. |
 | `ZAI_API_KEY` | ZAI API key. Configures GLM models. |
 | `AI_GATEWAY_API_KEY` | Vercel AI Gateway API key. |
 | `OPENCODE_API_KEY` | OpenCode API key. Also accepted as `OPENCODE_ZEN_API_KEY`. |
@@ -147,7 +147,9 @@ If a provider env var is removed, that provider section is cleaned from `opencla
 
 | Variable | Description |
 |---|---|
-| `OLLAMA_BASE_URL` | Ollama server URL (e.g. `http://host.docker.internal:11434`). Enables Ollama provider when set. |
+| `OLLAMA_BASE_URL` | Ollama server URL (e.g. `http://host.docker.internal:11434`). Enables the Ollama provider when set. `/v1` is appended if missing. When an Ollama provider is already configured, only `baseUrl` is updated. |
+
+Custom models belong in the mounted JSON file as `models.providers.ollama.models`. That list wins over a default `llama3.3` catalog saved by an older run. If no primary model is set, Ollama's automatic primary is the first model in the list. A saved primary of exactly `ollama/llama3.3` is moved to that first model when `llama3.3` is no longer configured. Set `OPENCLAW_PRIMARY_MODEL` to choose a different one. Restart the container after upgrading; no hand edit is required when the custom JSON defines the model list.
 
 ### OpenAI-compatible endpoint (LiteLLM, vLLM, LM Studio, LocalAI)
 
@@ -355,6 +357,11 @@ If a channel env var is removed, that channel is cleaned from config on next sta
 | `ANTHROPIC_BASE_URL` | Override Anthropic API base URL specifically. |
 | `MOONSHOT_BASE_URL` | Override Moonshot API base URL. Default: `https://api.moonshot.ai/v1`. |
 | `KIMI_BASE_URL` | Override Kimi Coding API base URL. Default: `https://api.moonshot.ai/anthropic`. |
+| `MINIMAX_BASE_URL` | Override the MiniMax Anthropic-compatible chat base URL. Default: `https://api.minimax.io/anthropic` (global). China: `https://api.minimaxi.com/anthropic`. |
+
+`MINIMAX_BASE_URL` is only the chat provider URL (`models.providers.minimax.baseUrl`). Image generation and text-to-speech ignore it. For those, set upstream OpenClaw's `MINIMAX_API_HOST` to the host with no `/anthropic` suffix (`https://api.minimax.io` by default, `https://api.minimaxi.com` for China). Music and video use the origin of the chat base URL, so a China `MINIMAX_BASE_URL` already sends them to `api.minimaxi.com`.
+
+A saved primary of `minimax/MiniMax-M2.1` is left unchanged, and M2.1 stays in the model list so that primary still resolves. When no primary is set, MiniMax auto-selects `minimax/MiniMax-M3`.
 
 ### Extra system packages (optional)
 
@@ -451,7 +458,7 @@ Override the mount path with `OPENCLAW_CUSTOM_CONFIG` env var if needed.
 2. Persisted state (`<STATE_DIR>/openclaw.json`) — preserves runtime changes from previous runs
 3. Env vars — applied on top, always win
 
-Arrays are replaced, not concatenated. Provider API keys are always read from env vars, never from JSON.
+Arrays are replaced, not concatenated. One exception: `models.providers.ollama.models` from the custom JSON file is kept when the persisted config still has an older Ollama model list. Provider API keys are always read from env vars, never from JSON.
 
 **Note:** WhatsApp is a special case — when `WHATSAPP_ENABLED=true`, env vars fully overwrite the WhatsApp config block (custom JSON whatsapp keys are discarded). For all other channels, custom JSON keys are preserved and env vars merge on top.
 
