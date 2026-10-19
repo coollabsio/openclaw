@@ -32,6 +32,11 @@ const {
   reconcileStaleOllamaPrimary,
   OPENAI_COMPATIBLE_PROVIDER_ID,
   resolveOpenAICompatibleProvider,
+  COMPOSE_BROWSER_SIDECAR_HOSTNAME,
+  cdpUrlHostname,
+  browserCdpUrls,
+  allowComposeBrowserSidecar,
+  resolveComposeBrowserSidecarSsrF,
 } = require('./utils');
 
 let passed = 0;
@@ -1311,6 +1316,370 @@ console.log('configure.js ollama');
   );
   eq(primaryOf(written), 'anthropic/claude-opus-4-5-20251101', 'a higher-priority provider still wins when no primary is set');
   eq(ollamaOf(written).models, [QWEN], 'ollama custom models stay when another provider is primary');
+}
+
+// ── Compose browser sidecar SSRF ────────────────────────────────────────────
+
+console.log('compose browser sidecar SSRF');
+
+eq(COMPOSE_BROWSER_SIDECAR_HOSTNAME, 'browser', 'sidecar hostname is the Compose service name');
+
+eq(cdpUrlHostname('http://browser:9223'), 'browser', 'compose CDP URL host');
+eq(cdpUrlHostname('  http://Browser:9223/json/version  '), 'browser', 'host case, space, and path');
+eq(cdpUrlHostname('http://browser.:9223'), 'browser', 'trailing dot on the sidecar host');
+eq(cdpUrlHostname('ws://browser:9223/devtools/browser/abc'), 'browser', 'websocket CDP URL');
+eq(cdpUrlHostname('http://user:pass@browser:9223'), 'browser', 'userinfo is not part of the host');
+eq(cdpUrlHostname('http://browser.internal:9223'), 'browser.internal', 'suffixed name is a different host');
+eq(cdpUrlHostname('http://192.168.1.10:9222'), '192.168.1.10', 'private IP literal stays an IP');
+eq(cdpUrlHostname('http://[::1]:9223'), '::1', 'IPv6 brackets are stripped');
+eq(cdpUrlHostname('https://chrome.example.com/json'), 'chrome.example.com', 'public CDP host');
+eq(cdpUrlHostname('browser:9223'), '', 'scheme-less value is not a CDP URL');
+eq(cdpUrlHostname(''), '', 'empty CDP URL');
+eq(cdpUrlHostname(undefined), '', 'missing CDP URL');
+eq(cdpUrlHostname('http://'), '', 'URL without a host');
+
+eq(
+  browserCdpUrls({
+    cdpUrl: 'http://browser:9223',
+    profiles: {
+      openclaw: { cdpUrl: 'http://10.0.0.5:9222' },
+      empty: {},
+      skip: null,
+    },
+  }),
+  ['http://browser:9223', 'http://10.0.0.5:9222'],
+  'top-level and profile CDP URLs are both visible'
+);
+eq(browserCdpUrls(null), [], 'missing browser config has no CDP URLs');
+eq(browserCdpUrls({ profiles: 'nope' }), [], 'non-object profiles are ignored');
+
+eq(
+  allowComposeBrowserSidecar(undefined),
+  { allowedHostnames: ['browser'] },
+  'new policy allowlists only the sidecar hostname'
+);
+assert(
+  allowComposeBrowserSidecar({}).dangerouslyAllowPrivateNetwork === undefined,
+  'new policy does not set dangerouslyAllowPrivateNetwork'
+);
+eq(
+  allowComposeBrowserSidecar({
+    allowRfc2544BenchmarkRange: true,
+    allowedHostnames: ['keep.internal'],
+  }),
+  {
+    allowRfc2544BenchmarkRange: true,
+    allowedHostnames: ['keep.internal', 'browser'],
+  },
+  'existing policy fields and hostnames are kept'
+);
+{
+  const existing = { allowedHostnames: ['Browser'] };
+  eq(allowComposeBrowserSidecar(existing), existing, 'hostname match is case-insensitive and does not copy the policy');
+}
+eq(
+  allowComposeBrowserSidecar({ allowedHostnames: '["keep.internal"]' }),
+  { allowedHostnames: ['keep.internal', 'browser'] },
+  'a JSON-string allowlist becomes a real array'
+);
+eq(
+  allowComposeBrowserSidecar({ allowedHostnames: 'keep.internal' }),
+  { allowedHostnames: ['keep.internal', 'browser'] },
+  'a single hostname string is kept and the sidecar is appended'
+);
+
+eq(
+  resolveComposeBrowserSidecarSsrF({ cdpUrl: 'http://10.1.2.3:9222' }, undefined),
+  { action: 'skip' },
+  'a private IP CDP URL does not auto-allow'
+);
+eq(
+  resolveComposeBrowserSidecarSsrF({ cdpUrl: 'https://chrome.example.com' }, undefined),
+  { action: 'skip' },
+  'a public CDP URL does not auto-allow'
+);
+eq(
+  resolveComposeBrowserSidecarSsrF({ cdpUrl: 'http://browser.internal:9223' }, undefined),
+  { action: 'skip' },
+  'a lookalike hostname does not auto-allow'
+);
+eq(
+  resolveComposeBrowserSidecarSsrF(undefined, undefined),
+  { action: 'skip' },
+  'no browser config does not auto-allow'
+);
+eq(
+  resolveComposeBrowserSidecarSsrF({ cdpUrl: 'http://browser:9223' }, 'false').action,
+  'opt-out',
+  'false opts out of the sidecar allowance'
+);
+eq(
+  resolveComposeBrowserSidecarSsrF({ cdpUrl: 'http://browser:9223' }, '0').action,
+  'opt-out',
+  '0 opts out of the sidecar allowance'
+);
+eq(
+  resolveComposeBrowserSidecarSsrF({ cdpUrl: 'http://browser:9223' }, 'FALSE').action,
+  'allow',
+  'only the exact values false and 0 opt out'
+);
+{
+  const decision = resolveComposeBrowserSidecarSsrF({
+    cdpUrl: 'http://browser:9223',
+    ssrfPolicy: { blockedHostnames: ['Browser'], allowedHostnames: ['keep.internal'] },
+  }, undefined);
+  eq(decision, { action: 'blocked' }, 'blockedHostnames wins over the automatic allowance');
+}
+{
+  const policy = { allowedHostnames: ['browser'], dangerouslyAllowPrivateNetwork: false };
+  const decision = resolveComposeBrowserSidecarSsrF({
+    profiles: { openclaw: { cdpUrl: 'http://browser:9223' } },
+    ssrfPolicy: policy,
+  }, undefined);
+  eq(decision.action, 'already', 'a profile CDP URL counts, and an existing allowlist is kept');
+  eq(decision.ssrfPolicy, policy, 'already-allowed policy object is unchanged');
+}
+
+// Same rule OpenClaw applies after an exact hostname is trusted: RFC1918 answers
+// are usable, and link-local / metadata addresses stay blocked unless the broad
+// private-network flag is set. This guards the config shape, not the upstream module.
+function sidecarCdpDecision(hostname, address, policy) {
+  const allowed = ((policy && policy.allowedHostnames) || []).map((host) =>
+    String(host).trim().toLowerCase().replace(/\.+$/, '')
+  );
+  const broad = !!(policy && policy.dangerouslyAllowPrivateNetwork === true);
+  const trusted = broad || allowed.includes(hostname);
+  const metadataOrLinkLocal = address.startsWith('169.254.') || address === '169.254.169.254';
+  const loopback = address === '127.0.0.1' || address === '::1';
+  const rfc1918 = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.)/.test(address);
+  if (!trusted) return (rfc1918 || metadataOrLinkLocal || loopback) ? 'blocked' : 'open';
+  if (broad) return 'open';
+  if (metadataOrLinkLocal || loopback) return 'blocked';
+  return 'open';
+}
+
+{
+  const policy = allowComposeBrowserSidecar(undefined);
+  eq(sidecarCdpDecision('browser', '172.18.0.4', policy), 'open', 'sidecar RFC1918 address is reachable once the hostname is allowed');
+  eq(sidecarCdpDecision('browser', '192.168.64.3', {}), 'blocked', 'without the allowlist the same private address is rejected');
+  eq(sidecarCdpDecision('browser', '169.254.169.254', policy), 'blocked', 'metadata address stays blocked under the hostname allowance');
+  eq(sidecarCdpDecision('other', '10.0.0.5', policy), 'blocked', 'a different private host is still blocked');
+  assert(policy.dangerouslyAllowPrivateNetwork !== true, 'the decision fixture does not use the broad private-network flag');
+}
+
+function runBrowserConfigure(env, files = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-browser-ssrf-'));
+  const configPath = path.join(dir, 'openclaw.json');
+  const customPath = path.join(dir, 'custom.json');
+  try {
+    if (files.persisted !== undefined) {
+      fs.writeFileSync(configPath, JSON.stringify(files.persisted));
+    }
+    if (files.custom !== undefined) {
+      fs.writeFileSync(customPath, JSON.stringify(files.custom));
+    }
+    const result = spawnSync(process.execPath, [path.join(__dirname, 'configure.js')], {
+      encoding: 'utf8',
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        ANTHROPIC_API_KEY: 'test-key',
+        OPENCLAW_STATE_DIR: dir,
+        OPENCLAW_WORKSPACE_DIR: path.join(dir, 'workspace'),
+        OPENCLAW_CONFIG_PATH: configPath,
+        OPENCLAW_CUSTOM_CONFIG: files.custom !== undefined
+          ? customPath
+          : path.join(dir, 'missing-custom.json'),
+        ...env,
+      },
+    });
+    assert(result.status === 0, `configure.js browser SSRF exits 0 (${JSON.stringify(env)})`);
+    if (result.status !== 0) {
+      console.error(result.stdout);
+      console.error(result.stderr);
+      return null;
+    }
+    return {
+      config: JSON.parse(fs.readFileSync(configPath, 'utf8')),
+      output: `${result.stdout || ''}\n${result.stderr || ''}`,
+    };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function browserPolicyOf(written) {
+  return written && written.config && written.config.browser && written.config.browser.ssrfPolicy;
+}
+
+{
+  const written = runBrowserConfigure({
+    BROWSER_CDP_URL: 'http://browser:9223',
+    BROWSER_DEFAULT_PROFILE: 'openclaw',
+  });
+  eq(written && written.config.browser.cdpUrl, 'http://browser:9223', 'configure.js writes the Compose CDP URL');
+  eq(written && written.config.browser.defaultProfile, 'openclaw', 'configure.js keeps the default profile');
+  eq(browserPolicyOf(written), { allowedHostnames: ['browser'] }, 'configure.js allowlists only hostname browser');
+  assert(
+    written && written.output.includes('Compose sidecar hostname "browser" allowed'),
+    'configure.js logs the narrow SSRF allowance',
+  );
+  assert(
+    written && !written.output.includes('dangerouslyAllowPrivateNetwork'),
+    'configure.js does not log the broad private-network flag',
+  );
+}
+
+{
+  const written = runBrowserConfigure({ BROWSER_CDP_URL: 'http://192.168.1.10:9222' });
+  assert(browserPolicyOf(written) === undefined, 'a private IP CDP URL does not gain an SSRF policy');
+}
+{
+  const written = runBrowserConfigure({ BROWSER_CDP_URL: 'https://chrome.browserless.io' });
+  assert(browserPolicyOf(written) === undefined, 'a public CDP URL does not gain an SSRF policy');
+}
+{
+  const written = runBrowserConfigure({ BROWSER_CDP_URL: 'http://browser.example.com:9223' });
+  assert(browserPolicyOf(written) === undefined, 'a public lookalike host does not gain an SSRF policy');
+}
+{
+  const written = runBrowserConfigure({});
+  assert(!written || !written.config.browser, 'browser config stays absent when CDP is unset');
+}
+
+{
+  const written = runBrowserConfigure({
+    BROWSER_CDP_URL: 'http://Browser:9223/',
+    'OPENCLAW__browser__ssrfPolicy__allowedHostnames[]': 'other.internal, browser',
+    'OPENCLAW__browser__ssrfPolicy__allowRfc2544BenchmarkRange': 'true',
+  });
+  eq(
+    browserPolicyOf(written),
+    { allowedHostnames: ['other.internal', 'browser'], allowRfc2544BenchmarkRange: true },
+    'dot-notation hostnames are kept and the broad flag is not added',
+  );
+}
+
+{
+  const written = runBrowserConfigure({
+    BROWSER_CDP_URL: 'http://browser:9223',
+    'OPENCLAW__browser__ssrfPolicy__allowedHostnames': '["keep.internal"]',
+    'OPENCLAW__browser__ssrfPolicy__dangerouslyAllowPrivateNetwork': 'true',
+  });
+  eq(
+    browserPolicyOf(written),
+    { allowedHostnames: ['keep.internal', 'browser'], dangerouslyAllowPrivateNetwork: true },
+    'a JSON-string allowlist is merged, and an explicit broad opt-in is preserved',
+  );
+  assert(
+    Array.isArray(browserPolicyOf(written).allowedHostnames),
+    'the merged allowlist is an array',
+  );
+}
+
+{
+  const written = runBrowserConfigure({}, {
+    custom: {
+      browser: {
+        profiles: { openclaw: { cdpUrl: 'http://browser:9223' } },
+        ssrfPolicy: { allowedHostnames: ['from-json'], dangerouslyAllowPrivateNetwork: false },
+      },
+    },
+  });
+  eq(
+    written && written.config.browser.profiles.openclaw.cdpUrl,
+    'http://browser:9223',
+    'a profile-only CDP URL is preserved',
+  );
+  eq(
+    browserPolicyOf(written),
+    { allowedHostnames: ['from-json', 'browser'], dangerouslyAllowPrivateNetwork: false },
+    'custom JSON policy is merged and an explicit false broad flag stays false',
+  );
+}
+
+{
+  const written = runBrowserConfigure({
+    BROWSER_CDP_URL: 'http://browser:9223',
+    OPENCLAW_CONFIG_JSON: JSON.stringify({ browser: { cdpUrl: 'http://203.0.113.5:9222' } }),
+  });
+  eq(written && written.config.browser.cdpUrl, 'http://203.0.113.5:9222', 'OPENCLAW_CONFIG_JSON cdpUrl overrides the env URL');
+  assert(browserPolicyOf(written) === undefined, 'the sidecar allowance follows the effective CDP URL');
+}
+
+{
+  const written = runBrowserConfigure({
+    BROWSER_CDP_URL: 'http://browser:9223',
+    BROWSER_SSRF_ALLOW_COMPOSE_SIDECAR: 'false',
+  });
+  eq(written && written.config.browser.cdpUrl, 'http://browser:9223', 'opt-out still writes the CDP URL');
+  assert(browserPolicyOf(written) === undefined, 'opt-out does not write an SSRF policy');
+  assert(
+    written && written.output.includes('BROWSER_SSRF_ALLOW_COMPOSE_SIDECAR=false'),
+    'opt-out is logged',
+  );
+}
+
+{
+  const written = runBrowserConfigure({
+    BROWSER_CDP_URL: 'http://browser:9223',
+    BROWSER_SSRF_ALLOW_COMPOSE_SIDECAR: '0',
+  });
+  assert(browserPolicyOf(written) === undefined, '0 opts out inside configure.js');
+}
+
+{
+  const written = runBrowserConfigure(
+    { BROWSER_CDP_URL: 'http://browser:9223' },
+    { custom: { browser: { ssrfPolicy: { blockedHostnames: ['browser'] } } } },
+  );
+  eq(
+    browserPolicyOf(written),
+    { blockedHostnames: ['browser'] },
+    'a blocked sidecar hostname is not added to allowedHostnames',
+  );
+  assert(
+    written && written.output.includes('listed in blockedHostnames'),
+    'the block is logged',
+  );
+}
+
+{
+  const first = {
+    browser: {
+      cdpUrl: 'http://browser:9223',
+      ssrfPolicy: { allowedHostnames: ['browser', 'browser'] },
+    },
+  };
+  const written = runBrowserConfigure(
+    { BROWSER_CDP_URL: 'http://browser:9223' },
+    { persisted: first },
+  );
+  eq(
+    browserPolicyOf(written).allowedHostnames,
+    ['browser', 'browser'],
+    'a second start does not append another browser hostname',
+  );
+}
+
+{
+  const written = runBrowserConfigure(
+    { BROWSER_CDP_URL: 'https://chrome.example.com' },
+    {
+      persisted: {
+        browser: {
+          cdpUrl: 'http://browser:9223',
+          ssrfPolicy: { allowedHostnames: ['browser'] },
+        },
+      },
+    },
+  );
+  eq(written && written.config.browser.cdpUrl, 'https://chrome.example.com', 'a later CDP URL replaces the sidecar URL');
+  eq(
+    browserPolicyOf(written),
+    { allowedHostnames: ['browser'] },
+    'a hostname saved on a previous start is left in place',
+  );
 }
 
 // ── Results ─────────────────────────────────────────────────────────────────

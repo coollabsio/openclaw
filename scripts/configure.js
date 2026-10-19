@@ -25,6 +25,7 @@ const {
   ollamaPrimaryModel,
   reconcileStaleOllamaPrimary,
   resolveOpenAICompatibleProvider,
+  resolveComposeBrowserSidecarSsrF,
 } = require('./utils');
 
 const STATE_DIR = (process.env.OPENCLAW_STATE_DIR || "/data/.openclaw").replace(/\/+$/, "");
@@ -658,6 +659,9 @@ if (process.env.HOOKS_ENABLED === "true" || process.env.HOOKS_ENABLED === "1") {
 }
 
 // ── Browser tool (remote CDP) ────────────────────────────────────────────────
+// The Compose sidecar hostname is allowlisted after dot-notation and JSON
+// merge (applyComposeBrowserSidecarSsrF). Doing it here would drop hostnames
+// those later steps write, and would miss a cdpUrl that exists only in JSON.
 if (process.env.BROWSER_CDP_URL) {
   console.log("[configure] configuring browser tool (remote CDP)");
   ensure(config, "browser");
@@ -789,11 +793,45 @@ function applyJsonConfig() {
   }
 }
 
+/**
+ * When CDP targets the Compose service `browser`, allow that exact hostname.
+ * Private addresses for every other host stay blocked. Never sets
+ * browser.ssrfPolicy.dangerouslyAllowPrivateNetwork.
+ */
+function applyComposeBrowserSidecarSsrF() {
+  const decision = resolveComposeBrowserSidecarSsrF(
+    config.browser,
+    process.env.BROWSER_SSRF_ALLOW_COMPOSE_SIDECAR,
+  );
+  if (decision.action === "allow" || decision.action === "already") {
+    ensure(config, "browser");
+    config.browser.ssrfPolicy = decision.ssrfPolicy;
+    console.log(
+      '[configure] browser SSRF: Compose sidecar hostname "browser" allowed (other private hosts stay blocked)',
+    );
+    return;
+  }
+  if (decision.action === "opt-out") {
+    console.log(
+      "[configure] browser SSRF: Compose sidecar hostname allow disabled (BROWSER_SSRF_ALLOW_COMPOSE_SIDECAR=" +
+        process.env.BROWSER_SSRF_ALLOW_COMPOSE_SIDECAR +
+        ")",
+    );
+    return;
+  }
+  if (decision.action === "blocked") {
+    console.log(
+      '[configure] browser SSRF: not allowing hostname "browser" (listed in blockedHostnames)',
+    );
+  }
+}
+
 // ── Execute Configuration Parsers ───────────────────────────────────────────
 
 applyDotNotationEnvVars();
 applyAllowedOrigins();
 applyJsonConfig();
+applyComposeBrowserSidecarSsrF();
 
 // ── Validate: at least one provider API key env var must be set ──────────────
 // All providers (built-in and custom) read API keys from env vars, not from JSON.

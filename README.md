@@ -33,7 +33,7 @@ docker compose up -d
 **After starting:**
 
 1. **Openclaw UI** — `http://localhost:8080` (login: your `AUTH_USERNAME` / `AUTH_PASSWORD`)
-2. **Browser desktop** — `http://localhost:8080/browser/` (login: your `AUTH_USERNAME` / `AUTH_PASSWORD`) — use this to log into sites that need auth (OAuth, 2FA, captchas). Openclaw reuses the session via CDP. The route stays behind basic auth. It proxies to the `browser` sidecar on port 3000 when that host exists (see [Browser tool](#browser-tool-remote-cdp-sidecar-optional)). Without the sidecar, nginx still starts and `/browser/` returns 502.
+2. **Browser desktop** — `http://localhost:8080/browser/` (login: your `AUTH_USERNAME` / `AUTH_PASSWORD`) — use this to log into sites that need auth (OAuth, 2FA, captchas). Openclaw reuses the session via CDP. The route stays behind basic auth. It proxies to the `browser` sidecar on port 3000 when that host exists (see [Browser tool](#browser-tool-remote-cdp-sidecar-optional)). Without the sidecar, nginx still starts and `/browser/` returns 502. CDP uses `http://browser:9223`. Startup allowlists that hostname for SSRF and leaves every other private address blocked.
 
 ### First login and device approval (OpenClaw 2026.10.5+)
 
@@ -253,14 +253,37 @@ When hooks are enabled and `AUTH_PASSWORD` is set, the hooks path automatically 
 
 | Variable | Default | Description |
 |---|---|---|
-| `BROWSER_CDP_URL` | | Remote CDP URL pointing to a browser sidecar (e.g. `http://browser:9222`). Required to activate browser tool. |
+| `BROWSER_CDP_URL` | | Remote CDP URL pointing to a browser sidecar (e.g. `http://browser:9222`). Required to activate browser tool. The official Compose file uses `http://browser:9223`. |
 | `BROWSER_EVALUATE_ENABLED` | `false` | Allow JavaScript evaluation in page context via browser actions. |
 | `BROWSER_SNAPSHOT_MODE` | | Default snapshot mode (e.g. `efficient`). |
 | `BROWSER_REMOTE_TIMEOUT_MS` | `1500` | HTTP timeout in ms for remote CDP connection. |
 | `BROWSER_REMOTE_HANDSHAKE_TIMEOUT_MS` | `3000` | WebSocket handshake timeout in ms for remote CDP. |
 | `BROWSER_DEFAULT_PROFILE` | | Override the default browser profile name. |
+| `BROWSER_SSRF_ALLOW_COMPOSE_SIDECAR` | | Set to `false` or `0` to skip the automatic `browser` hostname allowance below. Any other value leaves that allowance on. |
 
 Requires a separate browser container connected via Docker networking. Recommended: `kasmweb/chrome` (full Chrome desktop via noVNC on `:6901`, CDP on `:9222`). Docs: https://docs.openclaw.ai/tools/browser
+
+#### Compose sidecar and SSRF
+
+OpenClaw blocks browser connections to private and special-use addresses unless the operator opts in. The Compose service name `browser` resolves to a private container address, so `BROWSER_CDP_URL=http://browser:9223` fails in a few milliseconds with `Remote CDP for profile "openclaw" is not reachable` and no request reaches the sidecar.
+
+When the effective CDP URL uses the hostname `browser` — top-level `browser.cdpUrl`, or a profile `cdpUrl` — `configure.js` adds that exact name to `browser.ssrfPolicy.allowedHostnames`. Other Docker services, LAN addresses, link-local, and cloud metadata addresses stay blocked. A public CDP host, a raw private IP, and any other hostname are left unchanged. `browser.ssrfPolicy.dangerouslyAllowPrivateNetwork` is not set.
+
+That broad flag allows every private address. Set it only as a deliberate opt-in:
+
+```bash
+OPENCLAW__browser__ssrfPolicy__dangerouslyAllowPrivateNetwork=true
+```
+
+To allow one different private hostname, pass a real array. The `[]` suffix is required; a JSON-looking string without it is not an array:
+
+```bash
+OPENCLAW__browser__ssrfPolicy__allowedHostnames[]=my-browser
+```
+
+Hostnames set this way are kept. `browser` is still added when the CDP URL uses it. `BROWSER_SSRF_ALLOW_COMPOSE_SIDECAR=false` skips that add. A hostname already saved in `openclaw.json` is not removed when the CDP URL changes or the skip is turned on; delete the `browser` entry from the persisted file or from custom JSON to drop it.
+
+This allowance is gateway config only. A sidecar that listens on `127.0.0.1`, or that advertises a `localhost` WebSocket from `/json/version`, can still fail after the hostname is allowed.
 
 #### Browser login (VNC sidecar)
 
