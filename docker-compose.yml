@@ -12,7 +12,8 @@ services:
       - AUTH_USERNAME=${AUTH_USERNAME:-admin}
       - AUTH_PASSWORD=${AUTH_PASSWORD}
       - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
-      # Browser sidecar. configure.js allowlists hostname "browser" for SSRF.
+      # Browser sidecar. CDP is the image proxy on 9223 (Chromium stays on
+      # 127.0.0.1:9222). configure.js allowlists hostname "browser" for SSRF.
       # Other private addresses stay blocked; do not set dangerouslyAllowPrivateNetwork.
       - BROWSER_CDP_URL=http://browser:9223
       - BROWSER_DEFAULT_PROFILE=openclaw
@@ -31,7 +32,8 @@ services:
       # Optional: custom JSON config for complex settings (groups, plugins, etc.)
       # - ./my-openclaw.json:/app/config/openclaw.json
     depends_on:
-      - browser
+      browser:
+        condition: service_healthy
     restart: unless-stopped
 
   browser:
@@ -44,7 +46,15 @@ services:
       - PUID=1000
       - PGID=1000
       - TZ=Etc/UTC
-      - CHROME_CLI=--remote-debugging-port=9222
+      # Chrome 111+ rejects a CDP websocket whose Origin is not allowed.
+      # The image proxy also clears Origin on port 9223.
+      - CHROME_CLI=--remote-debugging-port=9222 --remote-allow-origins=*
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9223/json/version"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
     volumes:
       - browser-data:/config
     shm_size: 2g

@@ -11,8 +11,7 @@ services:
       - AUTH_USERNAME=${AUTH_USERNAME:-admin}
       - AUTH_PASSWORD=${AUTH_PASSWORD}
       - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
-      # Browser sidecar. configure.js allowlists hostname "browser" for SSRF.
-      # Other private addresses stay blocked; do not set dangerouslyAllowPrivateNetwork.
+      # Browser sidecar. See docker-compose.yml for the 9223 proxy and SSRF allowlist.
       - BROWSER_CDP_URL=http://browser:9223
       - BROWSER_DEFAULT_PROFILE=openclaw
       - BROWSER_EVALUATE_ENABLED=true
@@ -21,7 +20,8 @@ services:
     volumes:
       - openclaw-data:/data
     depends_on:
-      - browser
+      browser:
+        condition: service_healthy
     restart: unless-stopped
 
   browser:
@@ -32,7 +32,13 @@ services:
       - PUID=1000
       - PGID=1000
       - TZ=Etc/UTC
-      - CHROME_CLI=--remote-debugging-port=9222
+      - CHROME_CLI=--remote-debugging-port=9222 --remote-allow-origins=*
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9223/json/version"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
     volumes:
       - browser-data:/config
     shm_size: 2g
