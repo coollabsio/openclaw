@@ -122,9 +122,6 @@ Triggers: `schedule: '0 */6 * * *'` + `workflow_dispatch` (version, force_rebuil
 | `SYNTHETIC_API_KEY` | Synthetic API key (Anthropic-compatible). |
 | `COPILOT_GITHUB_TOKEN` | GitHub Copilot token. Configures Claude models via GitHub. |
 | `XIAOMI_API_KEY` | Xiaomi MiMo API key (Anthropic-compatible). Configures MiMo v2 Flash. |
-| `CUSTOM_API_KEY` | API key for any OpenAI-compatible endpoint. |
-| `CUSTOM_BASE_URL` | Base URL for the custom provider (default: `https://api.openai.com/v1`). |
-| `CUSTOM_MODEL` | Model ID for the custom provider (default: `gpt-4`). |
 
 Multiple providers can be set simultaneously. Priority for primary model: Anthropic > OpenAI > OpenRouter > Gemini > OpenCode > GitHub Copilot > xAI > Groq > Mistral > Cerebras > Venice > Moonshot > Kimi > MiniMax > Synthetic > ZAI > AI Gateway > Xiaomi > Bedrock > Ollama > OpenAI-Compatible.
 
@@ -151,6 +148,20 @@ If a provider env var is removed, that provider section is cleaned from `opencla
 | Variable | Description |
 |---|---|
 | `OLLAMA_BASE_URL` | Ollama server URL (e.g. `http://host.docker.internal:11434`). Enables Ollama provider when set. |
+
+### OpenAI-compatible endpoint (LiteLLM, vLLM, LM Studio, LocalAI)
+
+Any server that speaks the OpenAI chat-completions API. The provider id written to `openclaw.json` is `openai-compatible`.
+
+| Variable | Required | Description |
+|---|---|---|
+| `OPENAI_COMPATIBLE_BASE_URL` | yes | Base URL, for example `http://host.docker.internal:4000/v1`. Trailing slashes are stripped. There is no default — a missing URL does not fall back to `https://api.openai.com/v1`. |
+| `OPENAI_COMPATIBLE_MODEL` | yes | Model id, for example `my-model`. There is no default. Auto-selected primary model is `openai-compatible/<model>`. |
+| `OPENAI_COMPATIBLE_API_KEY` | no | API key when the server requires one. Omit it for local servers without auth (LM Studio, local vLLM). OpenClaw accepts a missing key when the base URL is loopback, a private LAN address, `*.local`, `host.docker.internal`, or a bare hostname. Public endpoints need a real key. |
+
+Both `OPENAI_COMPATIBLE_BASE_URL` and `OPENAI_COMPATIBLE_MODEL` must be set. If either is missing, the provider is skipped and a warning is logged. The API key value is never written to the log.
+
+If a mounted custom JSON already defines `models.providers["openai-compatible"]`, these variables update `baseUrl`, set `apiKey` only when `OPENAI_COMPATIBLE_API_KEY` is present, and add `OPENAI_COMPATIBLE_MODEL` to `models` when that id is not already listed. Other models and provider fields (for example `api`, `timeoutSeconds`, headers) stay in place.
 
 ### Model selection
 

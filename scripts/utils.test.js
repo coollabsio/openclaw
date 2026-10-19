@@ -19,6 +19,8 @@ const {
   normalizeCoolifyOrigin,
   normalizeCoolifyOrigins,
   coolifyAllowedOrigins,
+  OPENAI_COMPATIBLE_PROVIDER_ID,
+  resolveOpenAICompatibleProvider,
 } = require('./utils');
 
 let passed = 0;
@@ -519,6 +521,275 @@ eq(
   { segments: ['safe', 'constructor_name'], isArray: false },
   'partial match of unsafe key is allowed'
 );
+
+// ── OpenAI-compatible provider ──────────────────────────────────────────────
+
+console.log('resolveOpenAICompatibleProvider');
+
+const SECRET = 'sk-SUPERSECRET-do-not-log';
+
+function providerResult(input) {
+  return resolveOpenAICompatibleProvider(input);
+}
+
+{
+  const result = providerResult({});
+  eq(result.action, 'absent', 'no env vars leaves the provider absent');
+  eq(result.modelRef, '', 'absent result has no model ref');
+  assert(result.warning === undefined, 'absent result has no warning');
+  assert(!JSON.stringify(result).includes('api.openai.com'), 'absent result does not default the base URL');
+  assert(!JSON.stringify(result).includes('gpt-4'), 'absent result does not default the model');
+}
+
+{
+  const result = providerResult({ apiKey: SECRET });
+  eq(result.action, 'incomplete', 'API key alone does not enable the provider');
+  assert(!result.provider, 'incomplete result has no provider to send anywhere');
+  assert(result.warning.includes('OPENAI_COMPATIBLE_BASE_URL'), 'key-only warning names the base URL');
+  assert(result.warning.includes('OPENAI_COMPATIBLE_MODEL'), 'key-only warning names the model');
+  assert(!result.warning.includes(SECRET), 'key-only warning does not contain the key');
+  assert(!JSON.stringify(result).includes(SECRET), 'key-only result does not contain the key');
+  assert(!JSON.stringify(result).includes('api.openai.com'), 'key-only result does not default to OpenAI');
+  assert(!JSON.stringify(result).includes('gpt-4'), 'key-only result does not default to gpt-4');
+}
+
+{
+  const result = providerResult({ baseUrl: 'http://127.0.0.1:8000/v1' });
+  eq(result.action, 'incomplete', 'base URL alone is incomplete');
+  assert(result.warning.includes('OPENAI_COMPATIBLE_MODEL is required'), 'base-URL-only warning says the model is required');
+  assert(!result.warning.includes('OPENAI_COMPATIBLE_BASE_URL is required'), 'base-URL-only warning does not say the URL is missing');
+  assert(!result.warning.includes('OPENAI_COMPATIBLE_BASE_URL and OPENAI_COMPATIBLE_MODEL are required'), 'base-URL-only warning does not say both are missing');
+}
+
+{
+  const result = providerResult({ model: 'llama' });
+  eq(result.action, 'incomplete', 'model alone is incomplete');
+  assert(result.warning.includes('OPENAI_COMPATIBLE_BASE_URL'), 'model-only warning names the base URL');
+}
+
+{
+  const result = providerResult({
+    apiKey: '   ',
+    baseUrl: '   ',
+    model: '  ',
+  });
+  eq(result.action, 'absent', 'whitespace-only values count as unset');
+}
+
+{
+  const result = providerResult({
+    baseUrl: 'http://127.0.0.1:8000/v1///',
+    model: '  my-model  ',
+  });
+  eq(result.action, 'apply', 'local base URL and model enable the provider without a key');
+  eq(result.provider.baseUrl, 'http://127.0.0.1:8000/v1', 'trailing slashes are stripped');
+  eq(result.provider.api, 'openai-completions', 'new provider uses openai-completions');
+  assert(result.provider.apiKey === undefined, 'local provider omits apiKey when unset');
+  eq(result.provider.models, [
+    { id: 'my-model', name: 'my-model', contextWindow: 128000 },
+  ], 'model id, name, and context window are set');
+  eq(result.modelRef, 'openai-compatible/my-model', 'model ref uses the provider id and model');
+  eq(result.providerId, OPENAI_COMPATIBLE_PROVIDER_ID, 'provider id is openai-compatible');
+  assert(result.warning === undefined, 'local base URL without a key does not warn');
+}
+
+{
+  const localHosts = [
+    'http://localhost:1234/v1',
+    'http://host.docker.internal:4000/v1',
+    'http://192.168.1.20:8000/v1',
+    'http://10.1.2.3/v1',
+    'http://172.16.0.5/v1',
+    'http://vllm:8000/v1',
+    'http://lmstudio.local:1234/v1',
+    'http://[::1]:8000/v1',
+  ];
+  for (const baseUrl of localHosts) {
+    const result = providerResult({ baseUrl, model: 'm' });
+    assert(result.warning === undefined, `no key warning for local URL ${baseUrl}`);
+    assert(result.provider.apiKey === undefined, `no apiKey written for ${baseUrl}`);
+  }
+}
+
+{
+  const result = providerResult({
+    baseUrl: 'https://proxy.example.com/v1/',
+    model: 'llama-3.1-405b',
+  });
+  eq(result.action, 'apply', 'public base URL still configures the provider');
+  eq(result.provider.baseUrl, 'https://proxy.example.com/v1', 'public trailing slash stripped');
+  assert(result.provider.apiKey === undefined, 'public provider omits apiKey when unset');
+  assert(typeof result.warning === 'string' && result.warning.includes('OPENAI_COMPATIBLE_API_KEY'), 'public URL without a key warns');
+  assert(!result.warning.includes('proxy.example.com'), 'public warning does not echo the URL');
+}
+
+{
+  const result = providerResult({
+    apiKey: `  ${SECRET}  `,
+    baseUrl: 'https://proxy.example.com/openai',
+    model: 'llama-3.1-405b',
+  });
+  eq(result.provider.apiKey, SECRET, 'API key is trimmed and stored on the provider');
+  eq(result.provider.baseUrl, 'https://proxy.example.com/openai', 'explicit base URL is kept');
+  eq(result.provider.models[0].id, 'llama-3.1-405b', 'explicit model is kept');
+  assert(result.warning === undefined, 'public URL with a key does not warn');
+  assert(!result.warning || !result.warning.includes(SECRET), 'apply warning does not contain the key');
+}
+
+{
+  const existing = {
+    api: 'openai-responses',
+    baseUrl: 'http://old.example/v1',
+    apiKey: 'old-key',
+    timeoutSeconds: 300,
+    headers: { 'X-Trace': '1' },
+    models: [
+      { id: 'kept-model', name: 'Kept', contextWindow: 4096 },
+      { id: 'llama', name: 'Custom name', contextWindow: 8192 },
+    ],
+  };
+  const existingModels = existing.models;
+  const result = providerResult({
+    apiKey: SECRET,
+    baseUrl: 'http://litellm:4000/v1/',
+    model: 'new-model',
+    existing,
+  });
+  eq(result.provider.api, 'openai-responses', 'existing api adapter is preserved');
+  eq(result.provider.baseUrl, 'http://litellm:4000/v1', 'env base URL replaces the mounted one');
+  eq(result.provider.apiKey, SECRET, 'env API key replaces the mounted one');
+  eq(result.provider.timeoutSeconds, 300, 'extra provider fields are preserved');
+  eq(result.provider.headers, { 'X-Trace': '1' }, 'extra header fields are preserved');
+  eq(result.provider.models.map((model) => model.id), ['kept-model', 'llama', 'new-model'], 'new model is appended');
+  eq(result.provider.models[0], { id: 'kept-model', name: 'Kept', contextWindow: 4096 }, 'existing model is not rewritten');
+  eq(result.provider.models[1].contextWindow, 8192, 'matching model keeps its context window');
+  eq(existing.baseUrl, 'http://old.example/v1', 'existing provider object is not mutated');
+  eq(existing.models, existingModels, 'existing models array is not mutated');
+  eq(existing.models.length, 2, 'existing models keep their length');
+  assert(!result.warning || !result.warning.includes(SECRET), 'merge warning does not contain the key');
+}
+
+{
+  const result = providerResult({
+    baseUrl: 'https://proxy.example.com/v1',
+    model: 'llama',
+    existing: {
+      api: 'openai-completions',
+      apiKey: 'mounted-key',
+      models: [{ id: 'llama', name: 'Llama', contextWindow: 1000 }],
+    },
+  });
+  eq(result.provider.apiKey, 'mounted-key', 'unset env key does not wipe a mounted key');
+  eq(result.provider.models, [{ id: 'llama', name: 'Llama', contextWindow: 1000 }], 'existing model id is not duplicated');
+  assert(result.warning === undefined, 'mounted key suppresses the public missing-key warning');
+}
+
+{
+  const result = providerResult({
+    baseUrl: 'http://172.15.0.1/v1',
+    model: 'm',
+  });
+  assert(typeof result.warning === 'string', '172.15 is not treated as private LAN');
+}
+
+// configure.js must call the helper. These spawn the script instead of copying its logic.
+console.log('configure.js OpenAI-compatible provider');
+
+function runConfigure(env, customConfig) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-openai-compatible-'));
+  const customPath = path.join(dir, 'custom.json');
+  if (customConfig !== undefined) {
+    fs.writeFileSync(customPath, JSON.stringify(customConfig));
+  }
+  const result = spawnSync(process.execPath, [path.join(__dirname, 'configure.js')], {
+    encoding: 'utf8',
+    env: {
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      OPENCLAW_STATE_DIR: dir,
+      OPENCLAW_WORKSPACE_DIR: path.join(dir, 'workspace'),
+      OPENCLAW_CONFIG_PATH: path.join(dir, 'openclaw.json'),
+      OPENCLAW_CUSTOM_CONFIG: customConfig === undefined ? path.join(dir, 'missing.json') : customPath,
+      ...env,
+    },
+  });
+  let written = null;
+  const configPath = path.join(dir, 'openclaw.json');
+  if (fs.existsSync(configPath)) {
+    written = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+  return {
+    status: result.status,
+    output: `${result.stdout || ''}\n${result.stderr || ''}`,
+    written,
+  };
+}
+
+{
+  const run = runConfigure({ OPENAI_COMPATIBLE_API_KEY: SECRET });
+  eq(run.status, 1, 'configure.js rejects an API key without base URL and model');
+  assert(run.output.includes('OPENAI_COMPATIBLE_BASE_URL'), 'configure.js warning names the missing base URL');
+  assert(run.output.includes('OPENAI_COMPATIBLE_MODEL'), 'configure.js warning names the missing model');
+  assert(!run.output.includes(SECRET), 'configure.js does not log the API key');
+  assert(!run.output.includes('api.openai.com'), 'configure.js does not mention the OpenAI default URL');
+  eq(run.written, null, 'configure.js does not write a provider when the key is the only variable');
+}
+
+{
+  const run = runConfigure({
+    OPENAI_COMPATIBLE_BASE_URL: 'http://127.0.0.1:8000/v1/',
+    OPENAI_COMPATIBLE_MODEL: 'local-model',
+  });
+  eq(run.status, 0, 'configure.js accepts a local base URL and model without a key');
+  const provider = run.written.models.providers['openai-compatible'];
+  eq(provider.baseUrl, 'http://127.0.0.1:8000/v1', 'configure.js strips the trailing slash');
+  eq(provider.api, 'openai-completions', 'configure.js sets openai-completions');
+  assert(provider.apiKey === undefined, 'configure.js omits apiKey for a local server');
+  eq(provider.models[0].id, 'local-model', 'configure.js writes the model id');
+  eq(run.written.agents.defaults.model.primary, 'openai-compatible/local-model', 'configure.js auto-selects the custom model');
+}
+
+{
+  const run = runConfigure({
+    OPENAI_COMPATIBLE_API_KEY: SECRET,
+    OPENAI_COMPATIBLE_BASE_URL: 'http://litellm:4000/v1',
+    OPENAI_COMPATIBLE_MODEL: 'new-model',
+  }, {
+    models: {
+      providers: {
+        'openai-compatible': {
+          api: 'openai-completions',
+          baseUrl: 'http://old.example/v1',
+          timeoutSeconds: 90,
+          models: [
+            { id: 'kept-model', name: 'Kept', contextWindow: 2048 },
+          ],
+        },
+      },
+    },
+  });
+  eq(run.status, 0, 'configure.js merges onto a mounted provider');
+  const provider = run.written.models.providers['openai-compatible'];
+  eq(provider.baseUrl, 'http://litellm:4000/v1', 'configure.js updates baseUrl from the env');
+  eq(provider.apiKey, SECRET, 'configure.js updates apiKey from the env');
+  eq(provider.timeoutSeconds, 90, 'configure.js keeps extra mounted fields');
+  eq(provider.models.map((model) => model.id), ['kept-model', 'new-model'], 'configure.js keeps mounted models and adds the env model');
+  eq(provider.models[0].contextWindow, 2048, 'configure.js does not rewrite the mounted model');
+  assert(!run.output.includes(SECRET), 'configure.js does not log the API key while merging');
+}
+
+{
+  const run = runConfigure({
+    ANTHROPIC_API_KEY: 'test-key',
+    OPENAI_COMPATIBLE_BASE_URL: 'https://proxy.example.com/v1',
+    OPENAI_COMPATIBLE_MODEL: 'llama',
+  });
+  eq(run.status, 0, 'configure.js still starts when another provider is set');
+  assert(run.output.includes('OPENAI_COMPATIBLE_API_KEY'), 'configure.js warns when a public URL has no key');
+  assert(run.written.models.providers['openai-compatible'].apiKey === undefined, 'public provider is written without a key');
+  eq(run.written.agents.defaults.model.primary, 'anthropic/claude-opus-4-5-20251101', 'Anthropic stays ahead of the custom provider');
+}
 
 // ── Results ─────────────────────────────────────────────────────────────────
 
