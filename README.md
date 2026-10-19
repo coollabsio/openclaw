@@ -33,7 +33,25 @@ docker compose up -d
 **After starting:**
 
 1. **Openclaw UI** — `http://localhost:8080` (login: your `AUTH_USERNAME` / `AUTH_PASSWORD`)
-2. **Browser desktop** — `http://localhost:8080/browser/` (login: your `AUTH_USERNAME` / browser `PASSWORD`) — use this to log into sites that need auth (OAuth, 2FA, captchas). Openclaw reuses the session via CDP.
+2. **Browser desktop** — `http://localhost:8080/browser/` (login: your `AUTH_USERNAME` / `AUTH_PASSWORD`) — use this to log into sites that need auth (OAuth, 2FA, captchas). Openclaw reuses the session via CDP. The route stays behind basic auth. It proxies to the `browser` sidecar on port 3000 when that host exists (see [Browser tool](#browser-tool-remote-cdp-sidecar-optional)). Without the sidecar, nginx still starts and `/browser/` returns 502.
+
+### First login and device approval (OpenClaw 2026.10.5+)
+
+Each browser profile has to be approved once before the Control UI will connect.
+
+1. Sign in with HTTP basic auth (`AUTH_USERNAME` / `AUTH_PASSWORD`).
+2. Enter the gateway WebSocket URL and `OPENCLAW_GATEWAY_TOKEN`, then choose **Connect**. On Coolify the URL is the application's `wss://` address (same host as the Control UI, `wss` when the site is served over HTTPS).
+3. The page shows **Approve this browser** and a request id.
+4. In the container terminal, list pending requests and approve that id:
+
+   ```bash
+   openclaw devices list
+   openclaw devices approve <requestId>
+   ```
+
+   `openclaw devices approve` with no id only prints a preview and exits 1. Pass the request id from the page (or from `openclaw devices list`).
+
+5. Approval is stored for that browser profile. A different profile, or a browser that has cleared site data, needs the same steps again.
 
 ## Architecture
 
@@ -55,8 +73,9 @@ docker compose up -d
 │  entrypoint.sh                              │
 │    1. run custom init script (optional)     │
 │    2. configure.js (env vars → json)        │
-│    3. nginx (background)                    │
-│    4. exec openclaw gateway                 │
+│    3. openclaw doctor --fix (every start)   │
+│    4. nginx (background)                    │
+│    5. exec openclaw gateway                 │
 └─────────────────────────────────────────────┘
 ```
 
@@ -67,7 +86,7 @@ Two-layer Docker build:
 ## Files
 
 ```
-.github/workflows/auto-update.yml   — cron every 6h, check openclaw releases, build+push
+.github/workflows/auto-update.yml   — cron hourly, check openclaw releases, build+push
 .github/workflows/build.yml         — CI on push/PR; builds the latest upstream release (no push)
 Dockerfile.base                     — multi-stage: build openclaw from source → slim runtime
 Dockerfile                          — FROM base, add nginx + config scripts + entrypoint
@@ -90,7 +109,7 @@ Jobs:
 5. merge-final-manifest — merge into coollabsio/openclaw:<ver> + :latest
 ```
 
-Triggers: `schedule: '0 */6 * * *'` + `workflow_dispatch` (version, force_rebuild, skip_latest_tag).
+Triggers: `schedule: '0 * * * *'` (hourly) + `workflow_dispatch` (version, force_rebuild, skip_latest_tag).
 
 ## Secrets needed (repo settings)
 
@@ -465,6 +484,8 @@ Override the mount path with `OPENCLAW_CUSTOM_CONFIG` env var if needed.
 Arrays are replaced, not concatenated. One exception: `models.providers.ollama.models` from the custom JSON file is kept when the persisted config still has an older Ollama model list. Provider API keys are always read from env vars, never from JSON.
 
 **Note:** WhatsApp is a special case — when `WHATSAPP_ENABLED=true`, env vars fully overwrite the WhatsApp config block (custom JSON whatsapp keys are discarded). For all other channels, custom JSON keys are preserved and env vars merge on top.
+
+`openclaw doctor --fix` runs on every start. OpenClaw 2026.10.5 validates `openclaw.json` with a strict schema, and `gateway run` exits if an unrecognized key is present at process start, so doctor still rewrites the file before the gateway listens. That keeps upgrades migrating and still applies env-driven values from `configure.js` (doctor may then canonicalize a model id). Extra top-level keys are copied aside first and written back after the gateway is listening. A running gateway keeps the valid config it loaded and skips reloading the unrecognized key. Nested keys doctor changed are not put back. Related to [#15](https://github.com/coollabsio/openclaw/issues/15).
 
 ## Notes
 
