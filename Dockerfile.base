@@ -1,5 +1,6 @@
 # Build openclaw from source (some dist files are not shipped via npm).
-FROM node:22-bookworm AS openclaw-build
+# OpenClaw >=2026.9.3 requires Node >=24.16.0 <25 || >=26.1.0 (Node 22 dropped).
+FROM node:24-bookworm AS openclaw-build
 
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -40,7 +41,7 @@ RUN pnpm ui:build
 
 
 # Runtime image
-FROM node:22-bookworm
+FROM node:24-bookworm
 
 ENV NODE_ENV=production
 
