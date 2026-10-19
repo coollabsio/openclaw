@@ -32,6 +32,7 @@ const {
   reconcileStaleOllamaPrimary,
   OPENAI_COMPATIBLE_PROVIDER_ID,
   resolveOpenAICompatibleProvider,
+  browserCdpAllowHostname,
 } = require('./utils');
 
 let passed = 0;
@@ -1311,6 +1312,112 @@ console.log('configure.js ollama');
   );
   eq(primaryOf(written), 'anthropic/claude-opus-4-5-20251101', 'a higher-priority provider still wins when no primary is set');
   eq(ollamaOf(written).models, [QWEN], 'ollama custom models stay when another provider is primary');
+}
+
+console.log('browser CDP SSRF allow hostname');
+
+eq(browserCdpAllowHostname('http://browser:9223'), 'browser', 'compose service name is allowlisted');
+eq(browserCdpAllowHostname('http://Browser:9223/json'), 'browser', 'hostname is lowercased');
+eq(browserCdpAllowHostname('ws://browser:9223'), 'browser', 'websocket CDP URL uses the same host');
+eq(browserCdpAllowHostname('http://172.17.0.2:9223'), '172.17.0.2', 'RFC1918 literal is allowlisted');
+eq(browserCdpAllowHostname('http://10.1.2.3:9222'), '10.1.2.3', '10/8 literal is allowlisted');
+eq(browserCdpAllowHostname('http://100.64.1.5:9223'), '100.64.1.5', 'CGNAT literal is allowlisted');
+eq(browserCdpAllowHostname('http://[fd00::1]:9223'), 'fd00::1', 'IPv6 ULA literal is allowlisted');
+eq(browserCdpAllowHostname('http://host.docker.internal:9223'), 'host.docker.internal', 'host.docker.internal is allowlisted');
+eq(browserCdpAllowHostname('http://browser.internal:9223'), 'browser.internal', '.internal names are allowlisted');
+eq(browserCdpAllowHostname('http://127.0.0.1:9222'), '', 'loopback literal is not added');
+eq(browserCdpAllowHostname('http://localhost:9222'), '', 'localhost is not added');
+eq(browserCdpAllowHostname('https://browserless.example.com'), '', 'public CDP host is not added');
+eq(browserCdpAllowHostname('http://1.1.1.1:9222'), '', 'public IP literal is not added');
+eq(browserCdpAllowHostname('http://browser.lan:9223'), '', 'dotted private names are left to an explicit allowlist');
+eq(browserCdpAllowHostname(''), '', 'empty CDP URL adds nothing');
+eq(browserCdpAllowHostname('not a url'), '', 'invalid CDP URL adds nothing');
+
+console.log('configure.js browser SSRF allow hostname');
+
+{
+  const written = runConfigure({
+    ANTHROPIC_API_KEY: 'test-key',
+    BROWSER_CDP_URL: 'http://browser:9223',
+    BROWSER_DEFAULT_PROFILE: 'openclaw',
+    BROWSER_EVALUATE_ENABLED: 'true',
+  });
+  eq(written.browser.cdpUrl, 'http://browser:9223', 'configure.js writes the CDP URL');
+  eq(written.browser.defaultProfile, 'openclaw', 'configure.js writes the default browser profile');
+  eq(written.browser.evaluateEnabled, true, 'configure.js writes evaluateEnabled');
+  eq(
+    written.browser.ssrfPolicy.allowedHostnames,
+    ['browser'],
+    'configure.js allowlists the compose browser hostname'
+  );
+  eq(
+    written.browser.ssrfPolicy.dangerouslyAllowPrivateNetwork,
+    undefined,
+    'configure.js does not open every private network'
+  );
+}
+
+{
+  const written = runConfigure(
+    { ANTHROPIC_API_KEY: 'test-key', BROWSER_CDP_URL: 'http://browser:9223' },
+    { custom: { browser: { ssrfPolicy: { allowedHostnames: ['other'], evaluateEnabled: false } } } }
+  );
+  eq(
+    written.browser.ssrfPolicy.allowedHostnames,
+    ['other', 'browser'],
+    'configure.js appends the sidecar host to an existing allowlist'
+  );
+}
+
+{
+  const written = runConfigure(
+    { ANTHROPIC_API_KEY: 'test-key', BROWSER_CDP_URL: 'http://browser:9223' },
+    { custom: { browser: { ssrfPolicy: { allowedHostnames: ['Browser'] } } } }
+  );
+  eq(
+    written.browser.ssrfPolicy.allowedHostnames,
+    ['Browser'],
+    'configure.js does not duplicate a different-case allow entry'
+  );
+}
+
+{
+  const written = runConfigure(
+    { ANTHROPIC_API_KEY: 'test-key', BROWSER_CDP_URL: 'http://browser:9223' },
+    { custom: { browser: { ssrfPolicy: { blockedHostnames: ['browser'], allowedHostnames: ['other'] } } } }
+  );
+  eq(
+    written.browser.ssrfPolicy.allowedHostnames,
+    ['other'],
+    'configure.js does not allow a hostname the operator blocked'
+  );
+  eq(
+    written.browser.ssrfPolicy.blockedHostnames,
+    ['browser'],
+    'configure.js keeps the browser blocklist'
+  );
+}
+
+{
+  const written = runConfigure({
+    ANTHROPIC_API_KEY: 'test-key',
+    BROWSER_CDP_URL: 'https://browserless.example.com',
+  });
+  eq(written.browser.cdpUrl, 'https://browserless.example.com', 'configure.js still writes a public CDP URL');
+  eq(written.browser.ssrfPolicy, undefined, 'configure.js does not add an SSRF policy for a public CDP host');
+}
+
+{
+  const written = runConfigure({
+    ANTHROPIC_API_KEY: 'test-key',
+    BROWSER_CDP_URL: 'http://browser:9223',
+    'OPENCLAW__browser__ssrfPolicy__allowedHostnames[]': 'explicit.example',
+  });
+  eq(
+    written.browser.ssrfPolicy.allowedHostnames,
+    ['explicit.example'],
+    'dot-notation allowlist replaces the automatic hostname'
+  );
 }
 
 // ── Results ─────────────────────────────────────────────────────────────────

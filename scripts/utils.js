@@ -517,6 +517,98 @@ function minimaxModels() {
   });
 }
 
+/**
+ * Hostname OpenClaw would refuse for remote CDP under the default SSRF policy.
+ * Docker Compose service names (`browser`), private IP literals, and
+ * `.local` / `.internal` names resolve to addresses that policy blocks.
+ * Public hosts and loopback are not returned: public CDP already connects,
+ * and loopback CDP is exempt inside OpenClaw.
+ * @param {string} cdpUrl - BROWSER_CDP_URL
+ * @returns {string} - Hostname to add to browser.ssrfPolicy.allowedHostnames, or ''
+ */
+function browserCdpAllowHostname(cdpUrl) {
+  if (typeof cdpUrl !== 'string' || !cdpUrl.trim()) {
+    return '';
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(cdpUrl.trim());
+  } catch {
+    return '';
+  }
+
+  if (!['http:', 'https:', 'ws:', 'wss:'].includes(parsed.protocol)) {
+    return '';
+  }
+
+  // Some Node versions keep the brackets on IPv6 hostnames.
+  const hostname = parsed.hostname.toLowerCase().replace(/\.$/, '').replace(/^\[|\]$/g, '');
+  if (!hostname || isLoopbackCdpHostname(hostname)) {
+    return '';
+  }
+  if (!cdpHostnameNeedsPrivateAllow(hostname)) {
+    return '';
+  }
+  return hostname;
+}
+
+function isLoopbackCdpHostname(hostname) {
+  if (
+    hostname === 'localhost' ||
+    hostname === 'localhost.localdomain' ||
+    hostname.endsWith('.localhost') ||
+    hostname === '::1' ||
+    hostname === '0:0:0:0:0:0:0:1'
+  ) {
+    return true;
+  }
+
+  const octets = ipv4Octets(hostname);
+  return octets !== null && octets[0] === 127;
+}
+
+function cdpHostnameNeedsPrivateAllow(hostname) {
+  // Compose service names and other single-label Docker DNS names.
+  // IPv6 literals contain ":" and are classified below instead.
+  if (!hostname.includes('.') && !hostname.includes(':')) {
+    return true;
+  }
+  if (hostname === 'host.docker.internal' || hostname.endsWith('.local') || hostname.endsWith('.internal')) {
+    return true;
+  }
+  return isPrivateCdpIp(hostname);
+}
+
+function isPrivateCdpIp(hostname) {
+  const octets = ipv4Octets(hostname);
+  if (octets) {
+    const [a, b] = octets;
+    if (a === 10) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 169 && b === 254) return true;
+    // Carrier-grade NAT. Some Docker and cloud networks use 100.64.0.0/10.
+    if (a === 100 && b >= 64 && b <= 127) return true;
+    return false;
+  }
+
+  // Unique local addresses (fc00::/7). Link-local stays blocked upstream.
+  return hostname.startsWith('fc') || hostname.startsWith('fd');
+}
+
+function ipv4Octets(hostname) {
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
+  if (!match) {
+    return null;
+  }
+  const octets = match.slice(1).map((part) => Number(part));
+  if (octets.some((part) => part > 255)) {
+    return null;
+  }
+  return octets;
+}
+
 module.exports = {
   REGEX,
   ENV_VAR,
@@ -540,4 +632,5 @@ module.exports = {
   reconcileStaleOllamaPrimary,
   OPENAI_COMPATIBLE_PROVIDER_ID,
   resolveOpenAICompatibleProvider,
+  browserCdpAllowHostname,
 };

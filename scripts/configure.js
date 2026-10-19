@@ -25,6 +25,7 @@ const {
   ollamaPrimaryModel,
   reconcileStaleOllamaPrimary,
   resolveOpenAICompatibleProvider,
+  browserCdpAllowHostname,
 } = require('./utils');
 
 const STATE_DIR = (process.env.OPENCLAW_STATE_DIR || "/data/.openclaw").replace(/\/+$/, "");
@@ -676,6 +677,34 @@ if (process.env.BROWSER_CDP_URL) {
     br.remoteCdpHandshakeTimeoutMs = parseInt(process.env.BROWSER_REMOTE_HANDSHAKE_TIMEOUT_MS, 10);
   if (process.env.BROWSER_DEFAULT_PROFILE)
     br.defaultProfile = process.env.BROWSER_DEFAULT_PROFILE;
+
+  // OpenClaw refuses remote CDP to private Docker addresses unless the
+  // hostname is on browser.ssrfPolicy.allowedHostnames (#64). Allow only the
+  // configured sidecar host. Public endpoints and loopback are unchanged, and
+  // an operator blocklist still wins.
+  const allowHost = browserCdpAllowHostname(process.env.BROWSER_CDP_URL);
+  if (allowHost) {
+    const policy = br.ssrfPolicy && typeof br.ssrfPolicy === "object" && !Array.isArray(br.ssrfPolicy)
+      ? br.ssrfPolicy
+      : {};
+    const blocked = new Set(
+      (Array.isArray(policy.blockedHostnames) ? policy.blockedHostnames : [])
+        .filter((hostname) => typeof hostname === "string")
+        .map((hostname) => hostname.trim().toLowerCase())
+        .filter(Boolean)
+    );
+    if (!blocked.has(allowHost)) {
+      const allowed = Array.isArray(policy.allowedHostnames) ? policy.allowedHostnames.slice() : [];
+      const already = allowed.some(
+        (hostname) => typeof hostname === "string" && hostname.trim().toLowerCase() === allowHost
+      );
+      if (!already) {
+        allowed.push(allowHost);
+      }
+      br.ssrfPolicy = { ...policy, allowedHostnames: allowed };
+      console.log(`[configure] browser SSRF allow hostname: ${allowHost}`);
+    }
+  }
 } else if (config.browser) {
   console.log("[configure] browser configured (from custom JSON)");
 }

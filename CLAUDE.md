@@ -75,6 +75,8 @@ Numbers: `BROWSER_REMOTE_TIMEOUT_MS`, `BROWSER_REMOTE_HANDSHAKE_TIMEOUT_MS`
 
 Merge behavior: same as Telegram/Discord/Slack (merge, custom JSON keys preserved).
 
+`BROWSER_CDP_URL` also writes `browser.ssrfPolicy.allowedHostnames` for a single-label Docker hostname, a private IP, or a `.local` / `.internal` name. Loopback and public hosts are not added. `blockedHostnames` is left in place. Compose points CDP at `http://browser:9223` (the sidecar proxy). Chromium's own port `9222` stays on loopback.
+
 Docs: https://docs.openclaw.ai/tools/browser
 
 ### Groups/Guilds — JSON config only (all channels)

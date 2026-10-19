@@ -12,7 +12,9 @@ services:
       - AUTH_USERNAME=${AUTH_USERNAME:-admin}
       - AUTH_PASSWORD=${AUTH_PASSWORD}
       - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
-      # Browser sidecar
+      # Browser sidecar. Port 9223 is the image proxy; Chromium itself
+      # stays on 127.0.0.1:9222 (issue #45). configure.js allowlists the
+      # "browser" hostname so OpenClaw's private-network SSRF policy allows it.
       - BROWSER_CDP_URL=http://browser:9223
       - BROWSER_DEFAULT_PROFILE=openclaw
       - BROWSER_EVALUATE_ENABLED=true
@@ -30,17 +32,27 @@ services:
       # Optional: custom JSON config for complex settings (groups, plugins, etc.)
       # - ./my-openclaw.json:/app/config/openclaw.json
     depends_on:
-      - browser
+      browser:
+        condition: service_healthy
     restart: unless-stopped
 
   browser:
     image: coollabsio/openclaw-browser:latest
-    # No port exposure needed — proxied via openclaw at /browser/
+    # No port exposure needed — desktop is proxied via openclaw at /browser/
+    # (sidecar HTTP UI on 3000). CDP is http://browser:9223, not that route.
     environment:
       - PUID=1000
       - PGID=1000
       - TZ=Etc/UTC
-      - CHROME_CLI=--remote-debugging-port=9222
+      # Chrome 111+ rejects a CDP websocket whose Origin is not allowed.
+      # The image proxy also clears Origin on port 9223.
+      - CHROME_CLI=--remote-debugging-port=9222 --remote-allow-origins=*
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9223/json/version"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
     volumes:
       - browser-data:/config
     shm_size: 2g
