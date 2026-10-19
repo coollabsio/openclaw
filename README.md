@@ -182,10 +182,15 @@ Configure Cross-Origin Resource Sharing for the Control UI. Required when access
 |---|---|
 | `OPENCLAW_ALLOWED_ORIGINS` | Comma-separated list or JSON array of allowed origins. Example: `http://localhost:5173,https://app.example.com` or `["http://localhost:5173"]`. |
 
-On Coolify, `COOLIFY_FQDN` is added automatically. If Coolify supplies a bare
-hostname, it is normalized to an HTTPS origin (for example,
-`app.example.com` becomes `https://app.example.com`). Explicit `http://` and
-`https://` schemes are preserved.
+On Coolify, the application domain is added automatically. `COOLIFY_URL` is
+preferred when Coolify sets it, because that variable carries the real
+`http://` or `https://` scheme; otherwise `COOLIFY_FQDN` is used and a bare
+hostname becomes `https://` (for example, `app.example.com` becomes
+`https://app.example.com`). Several domains are comma-separated
+(`a.example.com,b.example.com` or `https://a.example.com,http://b.example.com`).
+Each entry is normalized to the browser origin: lowercase host, no path, and
+default ports such as `:443` removed. Values in `OPENCLAW_ALLOWED_ORIGINS`
+are kept as written and are not duplicated.
 
 ```bash
 # Allow specific origins
@@ -412,8 +417,8 @@ environment:
 
 | Variable | Description |
 |---|---|
-| `COOLIFY_FQDN` | Public FQDN assigned by Coolify. Bare hostnames are normalized to `https://` for the Control UI allowed origins. |
-| `COOLIFY_URL` | Coolify URL used as the allowed-origin fallback when `COOLIFY_FQDN` is unavailable. Bare hostnames are normalized to `https://`. |
+| `COOLIFY_URL` | Application URL(s) assigned by Coolify, scheme included. Comma-separated when several domains are configured. Preferred source for Control UI allowed origins; each entry is normalized to a browser origin. |
+| `COOLIFY_FQDN` | Application domain name(s), usually without a scheme. Used for allowed origins only when `COOLIFY_URL` is unset. Bare hosts become `https://` origins. |
 | `COOLIFY_BRANCH` | Git branch deployed. |
 
 ## Custom JSON config (Docker mount)
