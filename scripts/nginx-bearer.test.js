@@ -8,6 +8,7 @@
  */
 
 const { execFileSync } = require("child_process");
+const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -78,7 +79,9 @@ ${body.replaceAll("/usr/share/nginx/html", path.join(dir, "nginx-html"))}
 execFileSync("bash", ["-n", ENTRYPOINT]);
 assert(true, "entrypoint.sh passes bash -n");
 
-const withAuth = render(ENTRYPOINT, { AUTH_PASSWORD: "s3cret" });
+// Generated per run. A fixed password literal in this file is flagged by secret scanners.
+const authPassword = crypto.randomBytes(18).toString("base64url");
+const withAuth = render(ENTRYPOINT, { AUTH_PASSWORD: authPassword });
 const noAuth = render(ENTRYPOINT, { AUTH_PASSWORD: "" });
 
 assert(!withAuth.includes("~^/api/\""), "no broad /api/ prefix");
