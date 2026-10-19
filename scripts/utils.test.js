@@ -716,6 +716,7 @@ function providerResult(input) {
   const result = providerResult({ baseUrl: 'http://127.0.0.1:8000/v1' });
   eq(result.action, 'incomplete', 'base URL alone is incomplete');
   assert(result.warning.includes('OPENAI_COMPATIBLE_MODEL is required'), 'base-URL-only warning says the model is required');
+  assert(!result.warning.includes('OPENAI_COMPATIBLE_BASE_URL'), 'base-URL-only warning names only the missing model');
   assert(!result.warning.includes('OPENAI_COMPATIBLE_BASE_URL is required'), 'base-URL-only warning does not say the URL is missing');
   assert(!result.warning.includes('OPENAI_COMPATIBLE_BASE_URL and OPENAI_COMPATIBLE_MODEL are required'), 'base-URL-only warning does not say both are missing');
 }
@@ -723,7 +724,8 @@ function providerResult(input) {
 {
   const result = providerResult({ model: 'llama' });
   eq(result.action, 'incomplete', 'model alone is incomplete');
-  assert(result.warning.includes('OPENAI_COMPATIBLE_BASE_URL'), 'model-only warning names the base URL');
+  assert(result.warning.includes('OPENAI_COMPATIBLE_BASE_URL is required'), 'model-only warning says the base URL is required');
+  assert(!result.warning.includes('OPENAI_COMPATIBLE_MODEL'), 'model-only warning names only the missing base URL');
 }
 
 {
@@ -948,6 +950,84 @@ function runOpenAICompatibleConfigure(env, customConfig) {
   assert(run.output.includes('OPENAI_COMPATIBLE_API_KEY'), 'configure.js warns when a public URL has no key');
   assert(run.written.models.providers['openai-compatible'].apiKey === undefined, 'public provider is written without a key');
   eq(run.written.agents.defaults.model.primary, 'anthropic/claude-opus-4-5-20251101', 'Anthropic stays ahead of the custom provider');
+}
+
+// The entrypoint gate must use the helper, not a warning that always names both.
+console.log('entrypoint OpenAI-compatible gate');
+
+function runEntrypointOpenAIGate(env) {
+  const entrypoint = fs.readFileSync(path.join(__dirname, 'entrypoint.sh'), 'utf8');
+  const start = entrypoint.indexOf('# >>> openai-compatible-gate');
+  const end = entrypoint.indexOf('# <<< openai-compatible-gate');
+  if (start < 0 || end < 0) {
+    throw new Error('openai-compatible gate markers missing from entrypoint.sh');
+  }
+  const result = spawnSync(
+    'bash',
+    ['-c', `set -euo pipefail\nHAS_PROVIDER=0\n${entrypoint.slice(start, end)}\nprintf 'HAS_PROVIDER=%s\\n' "$HAS_PROVIDER"\n`],
+    {
+      encoding: 'utf8',
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        OPENCLAW_UTILS_JS: path.join(__dirname, 'utils.js'),
+        ...env,
+      },
+    },
+  );
+  return {
+    status: result.status,
+    output: `${result.stdout || ''}\n${result.stderr || ''}`,
+  };
+}
+
+{
+  const run = runEntrypointOpenAIGate({
+    OPENAI_COMPATIBLE_BASE_URL: 'http://127.0.0.1:8000/v1',
+  });
+  eq(run.status, 0, 'entrypoint gate exits 0 when only the model is missing');
+  assert(run.output.includes('[entrypoint] WARNING:'), 'entrypoint gate prints a warning');
+  assert(run.output.includes('OPENAI_COMPATIBLE_MODEL is required'), 'entrypoint gate names the missing model');
+  assert(!run.output.includes('OPENAI_COMPATIBLE_BASE_URL'), 'entrypoint gate does not name the set base URL');
+  assert(run.output.includes('HAS_PROVIDER=0'), 'a missing model does not count as a provider');
+}
+
+{
+  const run = runEntrypointOpenAIGate({
+    OPENAI_COMPATIBLE_MODEL: 'llama',
+  });
+  eq(run.status, 0, 'entrypoint gate exits 0 when only the base URL is missing');
+  assert(run.output.includes('OPENAI_COMPATIBLE_BASE_URL is required'), 'entrypoint gate names the missing base URL');
+  assert(!run.output.includes('OPENAI_COMPATIBLE_MODEL'), 'entrypoint gate does not name the set model');
+  assert(run.output.includes('HAS_PROVIDER=0'), 'a missing base URL does not count as a provider');
+}
+
+{
+  const run = runEntrypointOpenAIGate({
+    OPENAI_COMPATIBLE_API_KEY: SECRET,
+  });
+  eq(run.status, 0, 'entrypoint gate exits 0 when only the API key is set');
+  assert(run.output.includes('OPENAI_COMPATIBLE_BASE_URL'), 'entrypoint gate names the missing base URL when only the key is set');
+  assert(run.output.includes('OPENAI_COMPATIBLE_MODEL'), 'entrypoint gate names the missing model when only the key is set');
+  assert(!run.output.includes(SECRET), 'entrypoint gate does not print the API key');
+  assert(run.output.includes('HAS_PROVIDER=0'), 'an API key alone does not count as a provider');
+}
+
+{
+  const run = runEntrypointOpenAIGate({
+    OPENAI_COMPATIBLE_BASE_URL: 'http://127.0.0.1:8000/v1',
+    OPENAI_COMPATIBLE_MODEL: 'local-model',
+  });
+  eq(run.status, 0, 'entrypoint gate exits 0 when base URL and model are set');
+  assert(!run.output.includes('WARNING'), 'entrypoint gate does not warn when the provider is complete');
+  assert(run.output.includes('HAS_PROVIDER=1'), 'base URL and model count as a provider');
+}
+
+{
+  const run = runEntrypointOpenAIGate({});
+  eq(run.status, 0, 'entrypoint gate exits 0 when no OpenAI-compatible var is set');
+  assert(!run.output.includes('WARNING'), 'entrypoint gate stays quiet when the provider is absent');
+  assert(run.output.includes('HAS_PROVIDER=0'), 'absent OpenAI-compatible vars do not count as a provider');
 }
 
 // ── Ollama provider ─────────────────────────────────────────────────────────

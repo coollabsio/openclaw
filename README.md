@@ -107,6 +107,8 @@ Two-layer Docker build:
 1. **Base image** (`Dockerfile.base`) — builds openclaw from source. Tagged `coollabsio/openclaw-base:<version>`.
 2. **Final image** (`Dockerfile`) — FROM base, adds nginx + env-to-config scripts. Tagged `coollabsio/openclaw:<version>`.
 
+`GET /healthz` on the published port is not behind basic auth. Coolify and the image `HEALTHCHECK` both probe it. nginx forwards that path to the gateway's own `/healthz` and does not rewrite it to `/`. A live gateway returns `{"ok":true,"status":"live"}`. When the gateway port is closed, nginx returns 503, and `curl -f` fails. The health check's `--start-period` is 5 minutes. Failures in that window do not count, and the first success marks the container healthy immediately, so the Linuxbrew volume copy, `configure.js`, `doctor --fix`, and the first gateway boot are not marked unhealthy. After that success, later failures count toward `--retries`. If the gateway process exits, nginx keeps running so those probes can fail and Docker can report the container unhealthy.
+
 ## Files
 
 ```
@@ -115,7 +117,8 @@ Two-layer Docker build:
 Dockerfile.base                     — multi-stage: build openclaw from source → slim runtime
 Dockerfile                          — FROM base, add nginx + config scripts + entrypoint
 scripts/configure.js                — reads env vars, writes/patches openclaw.json
-scripts/entrypoint.sh               — container entrypoint: configure → nginx → gateway
+scripts/entrypoint.sh               — container entrypoint: configure → doctor → nginx → gateway
+scripts/preserve-hand-edits.js      — parks unrecognized top-level keys in openclaw.extra.json
 scripts/smoke.js                    — smoke test (openclaw --version)
 nginx/default.conf                  — reverse proxy :8080 → :18789, optional basic auth
 .dockerignore                       — standard ignores
@@ -541,7 +544,9 @@ Arrays are replaced, not concatenated. One exception: `models.providers.ollama.m
 
 **Note:** WhatsApp is a special case — when `WHATSAPP_ENABLED=true`, env vars fully overwrite the WhatsApp config block (custom JSON whatsapp keys are discarded). For all other channels, custom JSON keys are preserved and env vars merge on top.
 
-`openclaw doctor --fix` runs on every start. OpenClaw 2026.10.5 validates `openclaw.json` with a strict schema, and `gateway run` exits if an unrecognized key is present at process start, so doctor still rewrites the file before the gateway listens. That keeps upgrades migrating and still applies env-driven values from `configure.js` (doctor may then canonicalize a model id). Extra top-level keys are copied aside first and written back after the gateway is listening. A running gateway keeps the valid config it loaded and skips reloading the unrecognized key. Nested keys doctor changed are not put back. Related to [#15](https://github.com/coollabsio/openclaw/issues/15).
+`openclaw doctor --fix` runs on every start. OpenClaw 2026.10.5 validates `openclaw.json` with a strict schema. An unrecognized top-level key makes `gateway run` exit when it is present at process start, and it makes CLI commands such as `openclaw devices list`, `openclaw devices approve`, and `openclaw sessions` exit 1 (`Unrecognized key`). Doctor still rewrites `openclaw.json` before the gateway listens. That keeps upgrades migrating and still applies env-driven values from `configure.js` (doctor may then canonicalize a model id). Nested keys doctor changed are not put back.
+
+Unrecognized top-level keys are not written back into `openclaw.json`. They are parked in `<STATE_DIR>/openclaw.extra.json` (normally `/data/.openclaw/openclaw.extra.json`) and that file survives restarts. The gateway and the CLI do not load it — OpenClaw would reject those keys — so it preserves hand edits without becoming active config. Put settings OpenClaw understands in the custom JSON mount or in `openclaw.json`. A key you add to `openclaw.json` that doctor removes is moved into `openclaw.extra.json` on that start. A volume from an older image, which wrote those keys back into `openclaw.json` after the gateway was listening, is migrated the same way. Related to [#15](https://github.com/coollabsio/openclaw/issues/15) and [#98](https://github.com/coollabsio/openclaw/pull/98).
 
 ## Notes
 

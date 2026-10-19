@@ -34,7 +34,13 @@ ENV HOME=/data \
 ENV PORT=8080
 EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+# /healthz is the gateway live probe and returns 503 until that port accepts
+# connections. First boot copies Linuxbrew onto the volume, then runs
+# configure.js, doctor --fix, and the gateway. The startup page allows a few
+# minutes for that. Failures during start-period do not count, and the first
+# success marks the container healthy immediately, so a slow boot is not
+# unhealthy and a later gateway death still trips --retries.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=300s --retries=3 \
   CMD curl -f http://localhost:${PORT:-8080}/healthz || exit 1
 
 ENTRYPOINT ["/app/scripts/entrypoint.sh"]

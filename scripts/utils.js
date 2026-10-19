@@ -258,7 +258,6 @@ function resolveOpenAICompatibleProvider(input) {
       warning:
         '[configure] WARNING: skipping OpenAI-compatible provider — ' +
         `${missing.join(' and ')} ${noun} required. ` +
-        'Set OPENAI_COMPATIBLE_BASE_URL and OPENAI_COMPATIBLE_MODEL. ' +
         'OPENAI_COMPATIBLE_API_KEY is optional for local servers without auth.',
     };
   }
