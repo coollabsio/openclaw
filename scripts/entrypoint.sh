@@ -133,10 +133,34 @@ echo "[entrypoint] running configure..."
 node /app/scripts/configure.js
 chmod 600 "$STATE_DIR/openclaw.json"
 
-# ── Auto-fix doctor suggestions (e.g. enable configured channels) ─────────
+# ── Doctor repairs, preserving hand-edited top-level keys ───────────────────
+# OpenClaw 2026.10.5 validates openclaw.json with a strict object schema.
+# `openclaw doctor --fix` rewrites the file through that schema, so an extra
+# top-level key disappears. `gateway run` then refuses to start if the key is
+# still there ("Unrecognized key"). Once the gateway is up, the same key only
+# makes config reload skip ("config reload skipped (invalid config)"); the
+# process keeps the valid config it already loaded.
+#
+# Doctor still runs on every start. configure.js reapplies env-driven values
+# each boot, including model ids that doctor upgrades, and upgrades must keep
+# migrating state. --lint / --json do not apply those repairs. A version marker
+# that skips doctor leaves the reapplied env value unmigrated and the gateway
+# exits. Related to #15.
+#
+# Hand-edited top-level keys are snapshotted here and written back after the
+# gateway is listening (see the end of this script). Nested env-driven settings
+# are not reverted, so a doctor migration of those settings stays in effect.
+echo "[entrypoint] snapshotting config before openclaw doctor --fix..."
+node /app/scripts/preserve-hand-edits.js snapshot || echo "[entrypoint] WARNING: could not snapshot hand-edited keys"
 echo "[entrypoint] running openclaw doctor --fix..."
-cd /opt/openclaw/app
-openclaw doctor --fix 2>&1 || true
+if [ -d /opt/openclaw/app ]; then
+  cd /opt/openclaw/app
+fi
+doctor_status=0
+openclaw doctor --fix 2>&1 || doctor_status=$?
+if [ "$doctor_status" -ne 0 ]; then
+  echo "[entrypoint] WARNING: openclaw doctor --fix exited $doctor_status"
+fi
 
 # ── Read hooks path from generated config (if hooks enabled) ─────────────────
 HOOKS_PATH=""
@@ -193,6 +217,18 @@ if [ -n "$AUTH_PASSWORD" ]; then
   # Every pattern is anchored. Prefixes such as /api/ or /__openclaw__/ are not
   # used, and /rpc is not included: gateway RPC is the WebSocket, and an
   # unanchored ^/rpc match would also exempt /rpcanything.
+  #
+  # /__openclaw__/assistant-media stays on this list. A request with no
+  # Authorization header (img/audio src, mediaTicket query) still requires
+  # basic auth. The Control UI also fetches this exact path with
+  # `Authorization: Bearer <device or dashboard token>` — chat local-media
+  # metadata (?meta=1) and browser screenshot/download
+  # (ui/src/components/browser/browser-client.ts fetchBrowserScreenshotDataUrl,
+  # browser-panel-download.ts). That Bearer replaces the browser's Basic
+  # credentials, so this path has to skip basic auth or nginx re-prompts.
+  # A bare URL with no `source` is 404 from the gateway even with a token;
+  # that is a missing-source response, not an auth grant. Requests without
+  # Bearer still hit auth_basic below.
   #
   # $ocw_path is the raw request path with the query stripped, so percent-encoding
   # stays intact (catalog icons encode slashes) and ?token= cannot change the match.
@@ -278,6 +314,36 @@ if [ -n "$HOOKS_PATH" ]; then
 
         error_page 502 503 504 /starting.html;
     }"
+fi
+
+# nginx resolves a literal `proxy_pass http://browser:3000/` at startup and
+# refuses to boot when that name does not exist (issue #39). The sidecar is
+# optional: compose names it `browser` (VNC on :3000, CDP via BROWSER_CDP_URL),
+# and a plain `docker run` has no such host. A variable proxy_pass is resolved
+# by `resolver` on each request, so a missing sidecar returns 502/503 instead
+# of taking nginx down. /browser/ stays on basic auth whenever AUTH_PASSWORD
+# is set; it is not part of the bearer map.
+#
+# Docker's embedded DNS (127.0.0.11) does not read /etc/hosts, and
+# `docker run --add-host browser:…` only writes /etc/hosts. When getent can
+# already resolve the name, pin that address so both Docker DNS and --add-host
+# work. Otherwise keep the hostname for a later lookup.
+BROWSER_UPSTREAM_HOST="browser"
+RESOLVED_BROWSER_IP=""
+if command -v getent >/dev/null 2>&1; then
+  # getent exits 2 when the name is missing. The entrypoint runs under `set -e`,
+  # and the nginx unit test adds `pipefail`, so a missing sidecar must not abort
+  # config generation.
+  RESOLVED_BROWSER_IP="$(getent ahostsv4 browser 2>/dev/null | awk 'NR==1 { print $1; exit }' || true)"
+  case "$RESOLVED_BROWSER_IP" in
+    ""|*[!0-9.]*) ;;
+    *) BROWSER_UPSTREAM_HOST="$RESOLVED_BROWSER_IP" ;;
+  esac
+fi
+if [ "$BROWSER_UPSTREAM_HOST" = "browser" ]; then
+  echo "[entrypoint] browser host not resolved; /browser/ will proxy lazily via Docker DNS"
+else
+  echo "[entrypoint] browser host resolved to $BROWSER_UPSTREAM_HOST"
 fi
 
 # ── Write startup page for 502/503/504 while gateway boots ───────────────────
@@ -372,11 +438,15 @@ server {
         internal;
     }
 
-    # Browser sidecar proxy (VNC web UI)
+    # Browser sidecar proxy (VNC web UI). Variable upstream: see issue #39.
     location /browser/ {
         ${BROWSER_AUTH_BLOCK}
 
-        proxy_pass http://browser:3000/;
+        resolver 127.0.0.11 valid=10s ipv6=off;
+        resolver_timeout 5s;
+        set \$ocw_browser_upstream ${BROWSER_UPSTREAM_HOST}:3000;
+        rewrite ^/browser/(.*)\$ /\$1 break;
+        proxy_pass http://\$ocw_browser_upstream;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -406,4 +476,29 @@ echo "[entrypoint] starting openclaw gateway on port $GATEWAY_PORT..."
 # cwd must be the app root so the gateway finds dist/control-ui/ assets
 # "gateway run" = foreground mode; all config comes from openclaw.json
 cd /opt/openclaw/app
-exec openclaw gateway run
+openclaw gateway run &
+GATEWAY_PID=$!
+trap 'kill -TERM "$GATEWAY_PID" 2>/dev/null || true; wait "$GATEWAY_PID" 2>/dev/null || true; exit 0' TERM INT
+
+# The gateway reads config before it listens. Restoring an unrecognized key
+# any earlier makes this process exit. After listen, a reload of that key is
+# skipped and the loaded config (including env-driven settings) stays.
+GATEWAY_READY=0
+for _ in $(seq 1 180); do
+  if ! kill -0 "$GATEWAY_PID" 2>/dev/null; then
+    echo "[entrypoint] gateway exited before it was ready; leaving doctor output in place"
+    wait "$GATEWAY_PID" || true
+    exit 1
+  fi
+  if node -e "const n=require('net'); const s=n.connect(${GATEWAY_PORT}, '127.0.0.1', ()=>{s.end(); process.exit(0)}); s.on('error', ()=>process.exit(1)); setTimeout(()=>process.exit(1), 400)"; then
+    GATEWAY_READY=1
+    break
+  fi
+  sleep 1
+done
+if [ "$GATEWAY_READY" -eq 1 ]; then
+  node /app/scripts/preserve-hand-edits.js restore || echo "[entrypoint] WARNING: could not restore hand-edited keys"
+else
+  echo "[entrypoint] gateway port not open; not restoring hand-edited keys"
+fi
+wait "$GATEWAY_PID"

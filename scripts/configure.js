@@ -118,11 +118,10 @@ if (token) {
   config.gateway.auth.token = token;
 }
 
-// Allow control UI without device pairing (only set defaults, don't overwrite)
+// OpenClaw 2026.10.5 rejects gateway.controlUi.allowInsecureAuth (doctor
+// deletes it, and gateway run exits if it is still present). Device approval
+// is required; see the README. Only default the keys this schema still accepts.
 ensure(config, "gateway", "controlUi");
-if (config.gateway.controlUi.allowInsecureAuth === undefined) {
-  config.gateway.controlUi.allowInsecureAuth = true;
-}
 if (config.gateway.controlUi.enabled === undefined) {
   config.gateway.controlUi.enabled = true;
 }
