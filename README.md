@@ -147,7 +147,9 @@ If a provider env var is removed, that provider section is cleaned from `opencla
 
 | Variable | Description |
 |---|---|
-| `OLLAMA_BASE_URL` | Ollama server URL (e.g. `http://host.docker.internal:11434`). Enables Ollama provider when set. |
+| `OLLAMA_BASE_URL` | Ollama server URL (e.g. `http://host.docker.internal:11434`). Enables the Ollama provider when set. `/v1` is appended if missing. When an Ollama provider is already configured, only `baseUrl` is updated. |
+
+Custom models belong in the mounted JSON file as `models.providers.ollama.models`. That list wins over a default `llama3.3` catalog saved by an older run. If no primary model is set, Ollama's automatic primary is the first model in the list. A saved primary of exactly `ollama/llama3.3` is moved to that first model when `llama3.3` is no longer configured. Set `OPENCLAW_PRIMARY_MODEL` to choose a different one. Restart the container after upgrading; no hand edit is required when the custom JSON defines the model list.
 
 ### Model selection
 
@@ -437,7 +439,7 @@ Override the mount path with `OPENCLAW_CUSTOM_CONFIG` env var if needed.
 2. Persisted state (`<STATE_DIR>/openclaw.json`) — preserves runtime changes from previous runs
 3. Env vars — applied on top, always win
 
-Arrays are replaced, not concatenated. Provider API keys are always read from env vars, never from JSON.
+Arrays are replaced, not concatenated. One exception: `models.providers.ollama.models` from the custom JSON file is kept when the persisted config still has an older Ollama model list. Provider API keys are always read from env vars, never from JSON.
 
 **Note:** WhatsApp is a special case — when `WHATSAPP_ENABLED=true`, env vars fully overwrite the WhatsApp config block (custom JSON whatsapp keys are discarded). For all other channels, custom JSON keys are preserved and env vars merge on top.
 
