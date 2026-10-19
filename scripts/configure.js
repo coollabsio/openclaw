@@ -18,6 +18,12 @@ const {
   MINIMAX_PRIMARY_MODEL,
   minimaxBaseUrl,
   minimaxModels,
+  normalizeOllamaBaseUrl,
+  readCustomOllamaModels,
+  applyOllamaBaseUrl,
+  restoreCustomOllamaModels,
+  ollamaPrimaryModel,
+  reconcileStaleOllamaPrimary,
 } = require('./utils');
 
 const STATE_DIR = (process.env.OPENCLAW_STATE_DIR || "/data/.openclaw").replace(/\/+$/, "");
@@ -55,10 +61,15 @@ let config = {};
 
 // 1. Load user-provided custom config as base (if mounted)
 let hasCustomConfig = false;
+// Captured before the persisted merge below. That merge replaces arrays, so a
+// previously saved default ollama catalog ([llama3.3]) would hide models from
+// the mounted file. Only this provider's model list is restored afterward.
+let customOllamaModels = null;
 try {
   const customRaw = fs.readFileSync(CUSTOM_CONFIG, "utf8");
   config = JSON.parse(customRaw);
   hasCustomConfig = true;
+  customOllamaModels = readCustomOllamaModels(config);
   console.log("[configure] loaded custom config from", CUSTOM_CONFIG);
 } catch {
   // No custom config file — that's fine
@@ -321,24 +332,21 @@ if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
   delete config.models.bedrockDiscovery;
 }
 
-// Ollama (local, no API key needed)
-const ollamaUrl = (process.env.OLLAMA_BASE_URL || "").replace(/\/+$/, "");
+// Ollama (local, no API key needed).
+// Existing provider: update baseUrl only. Missing provider: default llama3.3.
+// Custom JSON models are written back after that so they win over both the
+// default catalog and a stale list saved on a previous run.
+const ollamaUrl = normalizeOllamaBaseUrl(process.env.OLLAMA_BASE_URL || "");
 if (ollamaUrl) {
   console.log("[configure] configuring Ollama provider");
-  ensure(config, "models", "providers");
-  const base = ollamaUrl.endsWith("/v1") ? ollamaUrl : `${ollamaUrl}/v1`;
-  config.models.providers.ollama = {
-    api: "openai-completions",
-    baseUrl: base,
-    models: [
-      { id: "llama3.3", name: "Llama 3.3", contextWindow: 128000 },
-    ],
-  };
+  applyOllamaBaseUrl(config, ollamaUrl);
 } else {
   removeProvider("ollama", "Ollama", "OLLAMA_BASE_URL");
 }
+restoreCustomOllamaModels(config, customOllamaModels);
 
 // ── Primary model selection (first available provider wins) ─────────────────
+const ollamaPrimary = ollamaPrimaryModel(config);
 const primaryCandidates = [
   [process.env.ANTHROPIC_API_KEY,      "anthropic/claude-opus-4-5-20251101"],
   [process.env.OPENAI_API_KEY,         "openai/gpt-5.2"],
@@ -359,15 +367,22 @@ const primaryCandidates = [
   [process.env.AI_GATEWAY_API_KEY,     "vercel-ai-gateway/anthropic/claude-opus-4.5"],
   [process.env.XIAOMI_API_KEY,         "xiaomi/mimo-v2-flash"],
   [process.env.AWS_ACCESS_KEY_ID,      "amazon-bedrock/anthropic.claude-opus-4-5-20251101-v1:0"],
-  [ollamaUrl,                          "ollama/llama3.3"],
+  [ollamaUrl && ollamaPrimary,         ollamaPrimary],
 ];
 if (process.env.OPENCLAW_PRIMARY_MODEL) {
   // Explicit env var override
   config.agents.defaults.model.primary = process.env.OPENCLAW_PRIMARY_MODEL;
   console.log(`[configure] primary model (override): ${process.env.OPENCLAW_PRIMARY_MODEL}`);
 } else if (config.agents.defaults.model.primary) {
-  // Already set (from custom JSON or persisted config) — keep it
-  console.log(`[configure] primary model (from config): ${config.agents.defaults.model.primary}`);
+  // Already set (from custom JSON or persisted config) — keep it, unless it is
+  // the old auto default and that model is no longer in the ollama catalog.
+  const reconciled = reconcileStaleOllamaPrimary(config, config.agents.defaults.model.primary);
+  if (reconciled !== config.agents.defaults.model.primary) {
+    config.agents.defaults.model.primary = reconciled;
+    console.log(`[configure] primary model (ollama): ${reconciled}`);
+  } else {
+    console.log(`[configure] primary model (from config): ${config.agents.defaults.model.primary}`);
+  }
 } else {
   // Auto-select from first available provider
   for (const [key, model] of primaryCandidates) {

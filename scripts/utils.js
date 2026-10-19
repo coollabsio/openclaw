@@ -161,6 +161,126 @@ function coolifyAllowedOrigins(coolifyUrl, coolifyFqdn) {
   return raw ? normalizeCoolifyOrigins(raw) : [];
 }
 
+// ── Ollama provider ─────────────────────────────────────────────────────────
+
+function isPlainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Strip trailing slashes and append `/v1` when it is not already there.
+ * Empty input (including a URL made only of slashes) returns ''.
+ * @param {string} ollamaUrl - OLLAMA_BASE_URL
+ * @returns {string}
+ */
+function normalizeOllamaBaseUrl(ollamaUrl) {
+  if (typeof ollamaUrl !== 'string') return '';
+  const stripped = ollamaUrl.replace(/\/+$/, '');
+  if (!stripped) return '';
+  return stripped.endsWith('/v1') ? stripped : `${stripped}/v1`;
+}
+
+function defaultOllamaProvider(baseUrl) {
+  return {
+    api: 'openai-completions',
+    baseUrl,
+    models: [{ id: 'llama3.3', name: 'Llama 3.3', contextWindow: 128000 }],
+  };
+}
+
+/**
+ * Model list from a mounted custom config, copied so the later persisted
+ * merge (which replaces arrays) cannot discard it. Null when unset.
+ * @param {object|null|undefined} customConfig
+ * @returns {object[]|null}
+ */
+function readCustomOllamaModels(customConfig) {
+  const models = customConfig?.models?.providers?.ollama?.models;
+  return Array.isArray(models) ? models.slice() : null;
+}
+
+/**
+ * Apply OLLAMA_BASE_URL. An existing ollama provider keeps every field
+ * except baseUrl. A missing provider gets the default llama3.3 catalog.
+ * @param {object} config - Config after the custom + persisted merge
+ * @param {string} ollamaUrl
+ * @returns {string} Normalized base URL, or '' when the env var is unset
+ */
+function applyOllamaBaseUrl(config, ollamaUrl) {
+  const base = normalizeOllamaBaseUrl(ollamaUrl);
+  if (!base || !isPlainObject(config)) return '';
+  if (!isPlainObject(config.models)) config.models = {};
+  if (!isPlainObject(config.models.providers)) config.models.providers = {};
+  if (!isPlainObject(config.models.providers.ollama)) {
+    config.models.providers.ollama = defaultOllamaProvider(base);
+  } else {
+    config.models.providers.ollama.baseUrl = base;
+  }
+  return base;
+}
+
+/**
+ * Put mounted custom ollama models back onto an existing provider.
+ * No-op when the custom file did not define a models array, or when the
+ * provider is absent (so a removed provider is not resurrected).
+ * @param {object} config
+ * @param {object[]|null} customModels - Result of readCustomOllamaModels
+ * @returns {object} config
+ */
+function restoreCustomOllamaModels(config, customModels) {
+  if (!Array.isArray(customModels)) return config;
+  const provider = config?.models?.providers?.ollama;
+  if (!isPlainObject(provider)) return config;
+  provider.models = customModels.slice();
+  return config;
+}
+
+/**
+ * Ids of configured ollama models, in list order, skipping blank ids.
+ * @param {object} config
+ * @returns {string[]}
+ */
+function ollamaModelIds(config) {
+  const models = config?.models?.providers?.ollama?.models;
+  if (!Array.isArray(models)) return [];
+  const ids = [];
+  for (const model of models) {
+    if (model && typeof model.id === 'string' && model.id.trim()) {
+      ids.push(model.id.trim());
+    }
+  }
+  return ids;
+}
+
+/**
+ * Automatic primary ref for the Ollama provider.
+ * First configured model, or ollama/llama3.3 when no models array is set.
+ * Returns null when the array is present but has no usable id.
+ * @param {object} config
+ * @returns {string|null}
+ */
+function ollamaPrimaryModel(config) {
+  const ids = ollamaModelIds(config);
+  if (ids.length > 0) return `ollama/${ids[0]}`;
+  const models = config?.models?.providers?.ollama?.models;
+  return Array.isArray(models) ? null : 'ollama/llama3.3';
+}
+
+/**
+ * A previous run stored primary "ollama/llama3.3" next to the default catalog.
+ * Once custom models replace that catalog, point the stale primary at the
+ * first configured model. Any other primary is left alone.
+ * @param {object} config
+ * @param {string} primary
+ * @returns {string}
+ */
+function reconcileStaleOllamaPrimary(config, primary) {
+  if (primary !== 'ollama/llama3.3') return primary;
+  const ids = ollamaModelIds(config);
+  if (ids.length === 0 || ids.includes('llama3.3')) return primary;
+  return `ollama/${ids[0]}`;
+}
+
 // ── MiniMax provider catalog ────────────────────────────────────────────────
 //
 // Anthropic-compatible chat endpoints (platform.minimax.io text-anthropic API):
@@ -263,4 +383,10 @@ module.exports = {
   MINIMAX_PRIMARY_MODEL,
   minimaxBaseUrl,
   minimaxModels,
+  normalizeOllamaBaseUrl,
+  readCustomOllamaModels,
+  applyOllamaBaseUrl,
+  restoreCustomOllamaModels,
+  ollamaPrimaryModel,
+  reconcileStaleOllamaPrimary,
 };
