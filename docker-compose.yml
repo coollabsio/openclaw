@@ -12,6 +12,12 @@ services:
       - AUTH_USERNAME=${AUTH_USERNAME:-admin}
       - AUTH_PASSWORD=${AUTH_PASSWORD}
       - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
+      # Chat history is /data/.openclaw/agents/<agentId>/agent/openclaw-agent.sqlite.
+      # HOME must be /data. The image default /root is outside this volume.
+      - HOME=/data
+      - OPENCLAW_HOME=/data
+      - OPENCLAW_STATE_DIR=/data/.openclaw
+      - OPENCLAW_WORKSPACE_DIR=/data/workspace
       # Browser sidecar
       - BROWSER_CDP_URL=http://browser:9223
       - BROWSER_DEFAULT_PROFILE=openclaw
@@ -26,6 +32,9 @@ services:
       # - HOOKS_ENABLED=true
       # - HOOKS_TOKEN=my-hook-secret
     volumes:
+      # Required. Covers config, credentials, workspace, and chat history
+      # (/data/.openclaw/agents/<agentId>/agent/openclaw-agent.sqlite).
+      # `docker compose down` keeps this volume. `down -v` deletes it.
       - openclaw-data:/data
       # Optional: custom JSON config for complex settings (groups, plugins, etc.)
       # - ./my-openclaw.json:/app/config/openclaw.json

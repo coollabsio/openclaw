@@ -20,7 +20,7 @@ docker run -d \
 - `AUTH_PASSWORD` — protects the web UI with HTTP basic auth (user defaults to `admin`, override with `AUTH_USERNAME`)
 - `OPENCLAW_GATEWAY_TOKEN` — internal API token; auto-generated if omitted, but set it explicitly for stable API access
 - `OPENCLAW_ALLOWED_ORIGINS` — **(Required)** Set to `http://localhost:5173` or your frontend origin to enable CORS for the Control UI
-- `/data` — persists state, config, and workspace across restarts
+- `/data` — required volume. Persists config, credentials, workspace, and chat history across container recreates (`docker compose down` keeps the named volume; `docker compose down -v` deletes it). OpenClaw 2026.10.5 stores sessions in `/data/.openclaw/agents/<agentId>/agent/openclaw-agent.sqlite`. The image sets `HOME` and `OPENCLAW_HOME` to `/data` so `~/.openclaw` is that directory. `/root/.openclaw` is outside the volume.
 
 ### Full Setup (docker-compose)
 
@@ -62,6 +62,9 @@ Each browser profile has to be approved once before the Control UI will connect.
 │  Baked in: Linuxbrew, Go, uv, build-essential│
 │  Persistent volume: /data                   │
 │    ├── .openclaw/      (state & config)     │
+│    │     └── agents/<id>/agent/             │
+│    │           openclaw-agent.sqlite        │
+│    │           (chat history)               │
 │    └── workspace/      (user projects)      │
 │                                             │
 │  ┌──────────┐  :8080   ┌────────────────┐  │
@@ -208,10 +211,15 @@ When `AUTH_PASSWORD` is set, the Control UI's own `Authorization: Bearer` fetche
 | `OPENCLAW_GATEWAY_BIND` | `loopback` | Gateway bind mode. `loopback` = 127.0.0.1 only (nginx proxies LAN traffic). `lan` = 0.0.0.0 (direct access, bypasses nginx auth). Also: `tailnet`, `auto`, `custom`. |
 
 `configure.js` sets `gateway.trustedProxies` to `127.0.0.1` and `::1` when the key is not already in the config. nginx overwrites `X-Forwarded-For` with the connecting client when basic auth is on, so OpenClaw's auth rate limit sees that client instead of treating everyone as loopback (which is exempt from lockout). This does not enable trusted-proxy authentication; `gateway.auth.mode` stays `token`. Set your own `gateway.trustedProxies` in custom JSON to override. With Docker port publishing, that client is often the bridge address shared by every visitor, and current OpenClaw builds may ask for a one-time device pairing for a non-loopback address.
-| `OPENCLAW_STATE_DIR` | `/data/.openclaw` | Persistent state directory. Mount a volume here. |
-| `OPENCLAW_WORKSPACE_DIR` | `/data/workspace` | Workspace directory for openclaw projects. |
+| `HOME` / `OPENCLAW_HOME` | `/data` | Makes `~/.openclaw` the state directory on the volume. The node image default `HOME=/root` stores chat history outside `/data`, and that copy disappears when the container is recreated. |
+| `OPENCLAW_STATE_DIR` | `/data/.openclaw` | Persistent state directory, including chat history at `agents/<agentId>/agent/openclaw-agent.sqlite`. Included in the `/data` volume. Do not mount a second volume on this path. |
+| `OPENCLAW_WORKSPACE_DIR` | `/data/workspace` | Workspace directory for openclaw projects. Included in the `/data` volume. |
 | `OPENCLAW_CONFIG_PATH` | `<STATE_DIR>/openclaw.json` | Override path to the config file. |
 | `OPENCLAW_CUSTOM_CONFIG` | `/app/config/openclaw.json` | Path to a user-provided custom JSON config. Env vars override on top. |
+
+`openclaw doctor --fix` runs on every start to migrate config. It does not delete the agent SQLite database. A session database found under the account home (`/root/.openclaw`) and missing from the volume is copied onto the volume once, then that ephemeral directory is renamed aside. An existing volume file is left in place.
+
+The Coolify service template (`templates/compose/openclaw.yaml` in the Coolify repo) mounts `openclaw-data:/data` and sets `OPENCLAW_STATE_DIR=/data/.openclaw`, the same path as [`docker-compose.yml`](docker-compose.yml).
 
 ### CORS / Allowed Origins (optional)
 
