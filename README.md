@@ -33,7 +33,7 @@ docker compose up -d
 **After starting:**
 
 1. **Openclaw UI** — `http://localhost:8080` (login: your `AUTH_USERNAME` / `AUTH_PASSWORD`)
-2. **Browser desktop** — `http://localhost:8080/browser/` (login: your `AUTH_USERNAME` / `AUTH_PASSWORD`) — use this to log into sites that need auth (OAuth, 2FA, captchas). Openclaw reuses the session via CDP. The route stays behind basic auth. It proxies to the `browser` sidecar on port 3000 when that host exists (see [Browser tool](#browser-tool-remote-cdp-sidecar-optional)). Without the sidecar, nginx still starts and `/browser/` returns 502.
+2. **Browser desktop** — `http://localhost:8080/browser/` (login: your `AUTH_USERNAME` / `AUTH_PASSWORD`) — use this to log into sites that need auth (OAuth, 2FA, captchas). Openclaw reuses the session via CDP at `http://browser:9223` (see [Browser tool](#browser-tool-remote-cdp-sidecar-optional)). The route stays behind basic auth. It proxies to the `browser` sidecar on port 3000 when that host exists. Without the sidecar, nginx still starts and `/browser/` returns 502. Do not publish container ports 9222 or 9223. Startup allowlists the hostname `browser` for SSRF and leaves every other private address blocked.
 
 ### First login and device approval (OpenClaw 2026.10.5+)
 
@@ -282,25 +282,52 @@ When hooks are enabled and `AUTH_PASSWORD` is set, the hooks path automatically 
 
 | Variable | Default | Description |
 |---|---|---|
-| `BROWSER_CDP_URL` | | Remote CDP URL pointing to a browser sidecar (e.g. `http://browser:9222`). Required to activate browser tool. |
+| `BROWSER_CDP_URL` | | Remote CDP URL. The compose file sets `http://browser:9223`. Required to activate the browser tool. |
 | `BROWSER_EVALUATE_ENABLED` | `false` | Allow JavaScript evaluation in page context via browser actions. |
 | `BROWSER_SNAPSHOT_MODE` | | Default snapshot mode (e.g. `efficient`). |
 | `BROWSER_REMOTE_TIMEOUT_MS` | `1500` | HTTP timeout in ms for remote CDP connection. |
 | `BROWSER_REMOTE_HANDSHAKE_TIMEOUT_MS` | `3000` | WebSocket handshake timeout in ms for remote CDP. |
 | `BROWSER_DEFAULT_PROFILE` | | Override the default browser profile name. |
+| `BROWSER_SSRF_ALLOW_COMPOSE_SIDECAR` | | Set to `false` or `0` to skip the automatic `browser` hostname allowance. Any other value, including unset, leaves that allowance on when the CDP hostname is exactly `browser`. |
 
-Requires a separate browser container connected via Docker networking. Recommended: `kasmweb/chrome` (full Chrome desktop via noVNC on `:6901`, CDP on `:9222`). Docs: https://docs.openclaw.ai/tools/browser
+[`docker-compose.yml`](docker-compose.yml) runs `coollabsio/openclaw-browser` on the same compose network. Docs: https://docs.openclaw.ai/tools/browser
 
-#### Browser login (VNC sidecar)
+| What | Where |
+|---|---|
+| Desktop UI | `http://<host>:8080/browser/` (HTTP basic auth). OpenClaw's nginx proxies to the sidecar UI on container port 3000. |
+| CDP | `http://browser:9223` on the compose network. Do not publish container ports 9222 or 9223. |
 
-For sites requiring authentication, use `kasmweb/chrome` so you can log in manually via a web-based desktop. Openclaw reuses the authenticated session via CDP.
+Chromium ignores `--remote-debugging-address` and binds DevTools to `127.0.0.1:9222` ([#45](https://github.com/coollabsio/openclaw/issues/45)). A second nginx on 9223 does not stay up: Selkies' `svc-nginx` kills every nginx it finds, and both masters use `/run/nginx.pid`. The image adds a server to that existing nginx instead. It listens on `0.0.0.0:9223` and proxies to `127.0.0.1:9222`, with `Host: localhost:9222` and an empty `Origin`. Chrome 111+ otherwise answers `403` to the websocket handshake OpenClaw sends (`Origin: http://browser:9223`). The image also passes `--remote-debugging-port=9222` and `--remote-allow-origins=*`. `CHROME_CLI` is appended and can still override those flags; the compose file sets the same pair.
 
-1. Open `https://<host>:6901` — full Chrome desktop via noVNC
-2. Navigate to the target site, log in manually (handles captchas, 2FA, OAuth)
-3. Sessions persist in a mounted volume across restarts
-4. Set `BROWSER_CDP_URL=http://browser:9222` — openclaw connects via CDP
+Publishing `9223:9223` would listen on every host interface. Leave CDP off the public internet. A temporary debug mapping, if you need one, is `127.0.0.1:9223:9223`.
 
-Mount a persistent volume at the sidecar's profile directory (`/home/kasm-user`) so cookies and sessions survive container restarts. The sidecar may need `CHROME_ARGS=--remote-debugging-port=9222 --remote-debugging-address=0.0.0.0` to expose CDP. Docs: https://docs.openclaw.ai/tools/browser-login
+#### Compose sidecar and SSRF
+
+OpenClaw blocks remote CDP to private addresses unless that hostname is allowlisted ([#64](https://github.com/coollabsio/openclaw/issues/64), [#68](https://github.com/coollabsio/openclaw/issues/68)). The Compose and Coolify service name is `browser`, and that name resolves to a private container address, so `BROWSER_CDP_URL=http://browser:9223` fails in a few milliseconds with `Remote CDP for profile "openclaw" is not reachable` before any request reaches the sidecar.
+
+When the effective CDP URL uses the hostname `browser` — top-level `browser.cdpUrl`, or a profile `cdpUrl` — `configure.js` adds that exact name to `browser.ssrfPolicy.allowedHostnames` after the JSON and dot-notation merge. The value is a real array of strings. That is the shape OpenClaw's strict schema keeps across `openclaw doctor --fix`. `browser.ssrfPolicy.dangerouslyAllowPrivateNetwork` is left unset.
+
+The allowance is that one hostname. Other Docker service names, raw private IPs, `.local` and `.internal` names, and `host.docker.internal` are left unchanged. Link-local and cloud metadata addresses, including `169.254.169.254`, stay blocked even when `browser` is allowed: an exact hostname allowance does not trust those DNS answers.
+
+`BROWSER_SSRF_ALLOW_COMPOSE_SIDECAR=false` (or `0`) skips the automatic hostname. A hostname already saved in `openclaw.json` is not removed when the CDP URL changes or the skip is turned on; delete the `browser` entry from the persisted file or from custom JSON to drop it. A hostname listed in `blockedHostnames` is not re-allowed.
+
+To allow one different private hostname, pass a real array. The `[]` suffix is required; a JSON-looking string without it is not an array:
+
+```bash
+OPENCLAW__browser__ssrfPolicy__allowedHostnames[]=my-browser
+```
+
+Hostnames set this way are kept, and `browser` is still added when the CDP URL uses it. The broad private-network flag allows every private address. Set it only as a deliberate opt-in:
+
+```bash
+OPENCLAW__browser__ssrfPolicy__dangerouslyAllowPrivateNetwork=true
+```
+
+#### Browser login
+
+Open `http://localhost:8080/browser/`, sign in with `AUTH_USERNAME` / `AUTH_PASSWORD`, then sign in to the site in the desktop (captchas, 2FA, OAuth). OpenClaw reuses that Chromium session over CDP. The compose file mounts `browser-data` at `/config`, so cookies and the profile survive restarts. `BROWSER_CDP_URL=http://browser:9223` is already set on the `openclaw` service.
+
+`kasmweb/chrome` is a different sidecar (desktop on `:6901`). Its CDP port and flags are not the ones in this compose file. Docs: https://docs.openclaw.ai/tools/browser-login
 
 ### Channels (optional)
 

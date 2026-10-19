@@ -16,7 +16,7 @@ services:
       - OPENCLAW_HOME=/data
       - OPENCLAW_STATE_DIR=/data/.openclaw
       - OPENCLAW_WORKSPACE_DIR=/data/workspace
-      # Browser sidecar
+      # Browser sidecar. See docker-compose.yml for the 9223 proxy and SSRF allowlist.
       - BROWSER_CDP_URL=http://browser:9223
       - BROWSER_DEFAULT_PROFILE=openclaw
       - BROWSER_EVALUATE_ENABLED=true
@@ -26,16 +26,25 @@ services:
       # Required. Chat history lives under /data/.openclaw on this volume.
       - openclaw-data:/data
     depends_on:
-      - browser
+      browser:
+        condition: service_healthy
     restart: unless-stopped
 
   browser:
     image: openclaw-browser:local
+    # CDP stays on the compose network at http://browser:9223. Do not publish
+    # 9222 or 9223. See docker-compose.yml.
     environment:
       - PUID=1000
       - PGID=1000
       - TZ=Etc/UTC
-      - CHROME_CLI=--remote-debugging-port=9222
+      - CHROME_CLI=--remote-debugging-port=9222 --remote-allow-origins=*
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9223/json/version"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
     volumes:
       - browser-data:/config
     shm_size: 2g
