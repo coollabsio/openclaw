@@ -116,6 +116,17 @@ if (config.gateway.bind === undefined) {
   config.gateway.bind = process.env.OPENCLAW_GATEWAY_BIND || "loopback";
 }
 
+// nginx is the only process that should connect to the loopback gateway, so
+// every browser otherwise shares 127.0.0.1. OpenClaw exempts loopback from
+// auth lockout. Trust that hop and let nginx set X-Forwarded-For to the TCP
+// peer (entrypoint.sh) so failures are counted per client. This does not
+// change gateway.auth.mode — token auth stays in place. A list already set
+// by custom JSON or a previous run is kept (trusted-proxy deployments).
+if (!Array.isArray(config.gateway.trustedProxies)) {
+  config.gateway.trustedProxies = ["127.0.0.1", "::1"];
+  console.log("[configure] gateway.trustedProxies: 127.0.0.1, ::1 (nginx)");
+}
+
 // ── Agents defaults ─────────────────────────────────────────────────────────
 
 ensure(config, "agents", "defaults");

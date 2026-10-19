@@ -159,8 +159,10 @@ If a provider env var is removed, that provider section is cleaned from `opencla
 
 | Variable | Default | Description |
 |---|---|---|
-| `AUTH_PASSWORD` | *(none)* | If set, nginx enforces HTTP basic auth on all routes except `/healthz` and the hooks path (when hooks are enabled). If unset, no auth — gateway is open. |
+| `AUTH_PASSWORD` | *(none)* | If set, nginx enforces HTTP basic auth on all routes except `/healthz`, the hooks path (when hooks are enabled), and `Authorization: Bearer` requests to the Control UI routes the gateway itself token-checks. If unset, the generated nginx config is unchanged and no auth is required. |
 | `AUTH_USERNAME` | `admin` | Username for basic auth. |
+
+When `AUTH_PASSWORD` is set, the Control UI's own `Authorization: Bearer` fetches (device token, gateway token, or password) would otherwise replace the browser's Basic credentials and make nginx re-prompt. nginx skips basic auth only for those exact paths, forwards the client's `Authorization` header, and does not append its own `token=` query parameter. `/`, the WebSocket, and `/browser/` stay on basic auth. An invalid or empty Bearer token is rejected by the gateway.
 
 ### Gateway
 
@@ -169,6 +171,8 @@ If a provider env var is removed, that provider section is cleaned from `opencla
 | `OPENCLAW_GATEWAY_TOKEN` | *(auto-generated)* | Bearer token for gateway auth. Auto-generated and persisted to `<STATE_DIR>/gateway.token` if not set. |
 | `OPENCLAW_GATEWAY_PORT` | `18789` | Internal port the gateway binds to. |
 | `OPENCLAW_GATEWAY_BIND` | `loopback` | Gateway bind mode. `loopback` = 127.0.0.1 only (nginx proxies LAN traffic). `lan` = 0.0.0.0 (direct access, bypasses nginx auth). Also: `tailnet`, `auto`, `custom`. |
+
+`configure.js` sets `gateway.trustedProxies` to `127.0.0.1` and `::1` when the key is not already in the config. nginx overwrites `X-Forwarded-For` with the connecting client when basic auth is on, so OpenClaw's auth rate limit sees that client instead of treating everyone as loopback (which is exempt from lockout). This does not enable trusted-proxy authentication; `gateway.auth.mode` stays `token`. Set your own `gateway.trustedProxies` in custom JSON to override. With Docker port publishing, that client is often the bridge address shared by every visitor, and current OpenClaw builds may ask for a one-time device pairing for a non-loopback address.
 | `OPENCLAW_STATE_DIR` | `/data/.openclaw` | Persistent state directory. Mount a volume here. |
 | `OPENCLAW_WORKSPACE_DIR` | `/data/workspace` | Workspace directory for openclaw projects. |
 | `OPENCLAW_CONFIG_PATH` | `<STATE_DIR>/openclaw.json` | Override path to the config file. |

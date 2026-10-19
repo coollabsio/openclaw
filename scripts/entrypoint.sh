@@ -148,6 +148,7 @@ AUTH_USERNAME="${AUTH_USERNAME:-admin}"
 NGINX_CONF="/etc/nginx/conf.d/openclaw.conf"
 
 AUTH_BLOCK=""
+BROWSER_AUTH_BLOCK=""
 # Bearer-aware pieces. Empty unless basic auth is on, so the no-auth path below
 # generates a byte-identical config to before.
 BEARER_MAPS=""
@@ -157,35 +158,63 @@ PROXY_ARGS_MAP="map \"\$ocw_has_token:\$args\" \$ocw_proxy_args {
     ~^0:.+  \"\$args&token=${GATEWAY_TOKEN}\";
     default \"token=${GATEWAY_TOKEN}\";
 }"
+# Inserted directly into the unquoted nginx heredoc (expanded once, not rescanned).
+XFF_DIRECT='$proxy_add_x_forwarded_for'
+# Hooks block is expanded again by that heredoc, so its dollar signs stay escaped.
+HOOKS_XFF='\$proxy_add_x_forwarded_for'
 
 if [ -n "$AUTH_PASSWORD" ]; then
   echo "[entrypoint] setting up nginx basic auth (user: $AUTH_USERNAME)"
   htpasswd -bc /etc/nginx/.htpasswd "$AUTH_USERNAME" "$AUTH_PASSWORD" 2>/dev/null
+  # /browser/ never consults the bearer map. It is the VNC sidecar, not a gateway route.
+  BROWSER_AUTH_BLOCK='auth_basic "Openclaw";
+        auth_basic_user_file /etc/nginx/.htpasswd;'
   AUTH_BLOCK='auth_basic $ocw_auth_realm;
         auth_basic_user_file /etc/nginx/.htpasswd;'
 
   # The Control UI authenticates to the gateway with `Authorization: Bearer
-  # <token>`. A request carries only one Authorization header, so on every fetch
-  # the UI makes itself that Bearer replaces the browser's Basic credentials,
-  # auth_basic rejects it, and the 401 + WWW-Authenticate re-prompts the user.
-  # Entering the correct password cannot help: the next UI fetch overwrites the
-  # header again. Same class of bug as #37 (webhook Authorization header), fixed
-  # the same way: skip basic auth and let the gateway validate the token.
+  # <token>` (a per-device token, the stored gateway token, or the password).
+  # A request carries only one Authorization header, so that Bearer replaces the
+  # browser's Basic credentials, auth_basic returns 401 + WWW-Authenticate, and
+  # the browser prompts again. Skip basic auth only for the exact paths the UI
+  # fetches that way, and only when the header is Bearer, then forward the
+  # client's header unchanged so the gateway — not nginx — accepts or rejects it.
   #
-  # Scoped to routes the gateway itself authenticates. "/" is deliberately NOT
-  # in the list: the gateway serves the UI shell unauthenticated, so exempting
-  # it would let any bogus Bearer walk straight past basic auth.
+  # "/" and the WebSocket stay on basic auth: the gateway serves the UI shell
+  # without its own token check, so a bogus Bearer there must not walk past nginx.
+  # Every pattern is anchored. Prefixes such as /api/ or /__openclaw__/ are not
+  # used, and /rpc is not included: gateway RPC is the WebSocket, and an
+  # unanchored ^/rpc match would also exempt /rpcanything.
+  #
+  # $ocw_path is the raw request path with the query stripped, so percent-encoding
+  # stays intact (catalog icons encode slashes) and ?token= cannot change the match.
   BEARER_MAPS="map \$http_authorization \$ocw_is_bearer {
-    default      0;
-    \"~*^Bearer \" 1;
+    default           0;
+    \"~*^Bearer\$\"    1;
+    \"~*^Bearer[[:space:]]\" 1;
 }
 
-map \$uri \$ocw_is_gateway_route {
-    default                       0;
-    \"~^/api/\"                     1;
-    \"~^/__openclaw__/\"            1;
-    \"~^/rpc\"                      1;
+map \$request_uri \$ocw_path {
+    \"~^([^?]*)\"  \$1;
+    default       \$uri;
+}
+
+map \$ocw_path \$ocw_is_gateway_route {
+    default 0;
     \"~^/control-ui-config\\.json\$\" 1;
+    \"~^/__openclaw__/control-ui-config\\.json\$\" 1;
+    \"~^/api/users/[^/]+/avatar\$\" 1;
+    \"~^/avatar/[^/]+\$\" 1;
+    \"~^/__openclaw__/assistant-media\$\" 1;
+    \"~^/__openclaw__/workspace-icon/[^/]+\$\" 1;
+    \"~^/__openclaw__/plugin-icon/[^/]+\$\" 1;
+    \"~^/__openclaw__/plugin-activity-icon/[^/]+\$\" 1;
+    \"~^/__openclaw__/catalog-icon/[^/]+\$\" 1;
+    \"~^/__openclaw__/link-favicon/[^/]+\$\" 1;
+    \"~^/__openclaw__/channel-avatar/[^/]+\$\" 1;
+    \"~^/__openclaw__/plugin-theme-art/[^/]+/[^/]+/[^/]+/[^/]+\$\" 1;
+    \"~^/__openclaw__/plugins/control-ui/[^/]+/[0-9a-fA-F]{64}/.+\$\" 1;
+    \"~^/api/chat/media/outgoing/[^/]+/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}/(full|thumbnail)\$\" 1;
 }
 
 map \"\$ocw_is_bearer\$ocw_is_gateway_route\" \$ocw_bearer_passthru {
@@ -213,6 +242,11 @@ map \$ocw_bearer_passthru \$ocw_upstream_auth {
     \"~^0:0:.+\"                \"\$args&token=${GATEWAY_TOKEN}\";
     default                   \"token=${GATEWAY_TOKEN}\";
 }"
+  # Overwrite, do not append. The gateway trusts 127.0.0.1 and reads the
+  # rightmost untrusted X-Forwarded-For hop; a client-supplied value must not
+  # be that hop when the TCP peer is loopback.
+  XFF_DIRECT='$remote_addr'
+  HOOKS_XFF='\$remote_addr'
 else
   echo "[entrypoint] no AUTH_PASSWORD set, nginx will not require authentication"
 fi
@@ -226,7 +260,7 @@ if [ -n "$HOOKS_PATH" ]; then
 
         proxy_set_header Host \\\$host;
         proxy_set_header X-Real-IP \\\$remote_addr;
-        proxy_set_header X-Forwarded-For \\\$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For ${HOOKS_XFF};
         proxy_set_header X-Forwarded-Proto \\\$scheme;
 
         proxy_http_version 1.1;
@@ -312,7 +346,7 @@ server {
 
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For ${XFF_DIRECT};
         proxy_set_header X-Forwarded-Proto \$scheme;
 
         proxy_http_version 1.1;
@@ -332,7 +366,7 @@ server {
 
     # Browser sidecar proxy (VNC web UI)
     location /browser/ {
-        ${AUTH_BLOCK}
+        ${BROWSER_AUTH_BLOCK}
 
         proxy_pass http://browser:3000/;
         proxy_set_header Host \$host;
