@@ -68,7 +68,7 @@ Two-layer Docker build:
 
 ```
 .github/workflows/auto-update.yml   — cron every 6h, check openclaw releases, build+push
-.github/workflows/build.yml         — CI on push/PR (build only, no push)
+.github/workflows/build.yml         — CI on push/PR; builds the latest upstream release (no push)
 Dockerfile.base                     — multi-stage: build openclaw from source → slim runtime
 Dockerfile                          — FROM base, add nginx + config scripts + entrypoint
 scripts/configure.js                — reads env vars, writes/patches openclaw.json

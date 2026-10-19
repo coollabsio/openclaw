@@ -7,6 +7,15 @@ on:
       - main
 
 jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Run unit tests
+        run: node scripts/utils.test.js
+
   docker-build:
     runs-on: ubuntu-latest
     permissions:
@@ -14,6 +23,29 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      # Release publishes build a tag, not this repo's default ref (`main`).
+      # A green `main` build missed the v2026.10.x OverlayFS rename failure.
+      - name: Resolve latest upstream release
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=$(curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/openclaw/openclaw/releases/latest \
+            | jq -er '.tag_name')
+          case "$tag" in
+            v[0-9]*) ;;
+            *)
+              echo "Refusing to build invalid upstream tag: ${tag}" >&2
+              exit 1
+              ;;
+          esac
+          echo "ref=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Latest upstream release: ${tag}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -26,6 +58,8 @@ jobs:
           context: .
           file: ./Dockerfile.base
           push: false
+          build-args: |
+            OPENCLAW_GIT_REF=${{ steps.upstream.outputs.ref }}
           tags: openclaw-base:ci
 
       - name: Build final image
@@ -37,3 +71,15 @@ jobs:
           build-args: |
             BASE_IMAGE=openclaw-base:ci
           tags: openclaw:ci
+
+      - name: Check Control UI assets and smoke-test the image
+        env:
+          UPSTREAM_REF: ${{ steps.upstream.outputs.ref }}
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint bash openclaw:ci -lc 'test -s /opt/openclaw/app/dist/control-ui/index.html'
+          docker run --rm --entrypoint bash openclaw:ci -lc 'cp /app/scripts/smoke.js /tmp/smoke.mjs && node /tmp/smoke.mjs'
+          version=$(docker run --rm --entrypoint openclaw openclaw:ci --version)
+          echo "openclaw --version: ${version}"
+          expected="${UPSTREAM_REF#v}"
+          printf '%s\n' "$version" | grep -F "$expected"
