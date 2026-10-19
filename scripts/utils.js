@@ -161,6 +161,93 @@ function coolifyAllowedOrigins(coolifyUrl, coolifyFqdn) {
   return raw ? normalizeCoolifyOrigins(raw) : [];
 }
 
+// ── MiniMax provider catalog ────────────────────────────────────────────────
+//
+// Anthropic-compatible chat endpoints (platform.minimax.io text-anthropic API):
+//   global: https://api.minimax.io/anthropic
+//   China:  https://api.minimaxi.com/anthropic
+//
+// Model ids and context windows match that API. Upstream OpenClaw's bundled
+// catalog (extensions/minimax) supplies the metadata below for M3 and M2.7:
+// reasoning, input, maxTokens 131072, M3 cost, and M3 compat.codeMode.
+//
+// MiniMax-M3 returns empty content when thinking is disabled. OpenClaw picks
+// adaptive thinking from the model id (`reasoning: true` is the catalog flag;
+// this image does not write a thinking override). M2.x thinking stays off
+// inside OpenClaw unless the user sets it, so reasoning_content is not leaked.
+//
+// MiniMax-M2.1 stays as a third entry. configure.js never overwrites a saved
+// primary, so users on minimax/MiniMax-M2.1 keep that ref — it has to remain
+// in the model list or the saved primary stops resolving. New installs with
+// no primary still auto-select MiniMax-M3.
+
+const MINIMAX_GLOBAL_BASE_URL = 'https://api.minimax.io/anthropic';
+const MINIMAX_CN_BASE_URL = 'https://api.minimaxi.com/anthropic';
+const MINIMAX_PRIMARY_MODEL = 'minimax/MiniMax-M3';
+const MINIMAX_MAX_TOKENS = 131072;
+
+const MINIMAX_MODEL_CATALOG = [
+  {
+    id: 'MiniMax-M3',
+    name: 'MiniMax M3',
+    reasoning: true,
+    input: ['text', 'image'],
+    compat: { codeMode: 'preferred' },
+    cost: { input: 0.6, output: 2.4, cacheRead: 0.12, cacheWrite: 0 },
+    contextWindow: 1000000,
+    maxTokens: MINIMAX_MAX_TOKENS,
+  },
+  {
+    id: 'MiniMax-M2.7',
+    name: 'MiniMax M2.7',
+    reasoning: true,
+    input: ['text'],
+    cost: { input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0.375 },
+    contextWindow: 204800,
+    maxTokens: MINIMAX_MAX_TOKENS,
+  },
+  {
+    id: 'MiniMax-M2.1',
+    name: 'MiniMax M2.1',
+    reasoning: true,
+    input: ['text'],
+    contextWindow: 204800,
+    maxTokens: MINIMAX_MAX_TOKENS,
+  },
+];
+
+/**
+ * Anthropic-compatible MiniMax chat base URL.
+ * Blank or non-string values use the global endpoint. Trailing slashes are removed.
+ * @param {string|undefined|null} rawValue - MINIMAX_BASE_URL
+ * @returns {string}
+ */
+function minimaxBaseUrl(rawValue) {
+  const trimmed = typeof rawValue === 'string' ? rawValue.trim() : '';
+  return (trimmed || MINIMAX_GLOBAL_BASE_URL).replace(/\/+$/, '');
+}
+
+/**
+ * Fresh MiniMax model list: M3, M2.7, then legacy M2.1.
+ * Each call returns new objects so a config write cannot mutate the catalog.
+ * @returns {object[]}
+ */
+function minimaxModels() {
+  return MINIMAX_MODEL_CATALOG.map((model) => {
+    const copy = {
+      id: model.id,
+      name: model.name,
+      reasoning: model.reasoning,
+      input: model.input.slice(),
+    };
+    if (model.compat) copy.compat = { ...model.compat };
+    if (model.cost) copy.cost = { ...model.cost };
+    copy.contextWindow = model.contextWindow;
+    copy.maxTokens = model.maxTokens;
+    return copy;
+  });
+}
+
 module.exports = {
   REGEX,
   ENV_VAR,
@@ -171,4 +258,9 @@ module.exports = {
   normalizeCoolifyOrigin,
   normalizeCoolifyOrigins,
   coolifyAllowedOrigins,
+  MINIMAX_GLOBAL_BASE_URL,
+  MINIMAX_CN_BASE_URL,
+  MINIMAX_PRIMARY_MODEL,
+  minimaxBaseUrl,
+  minimaxModels,
 };

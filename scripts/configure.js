@@ -15,6 +15,9 @@ const {
   parseArrayValue,
   parseAllowedOrigins,
   coolifyAllowedOrigins,
+  MINIMAX_PRIMARY_MODEL,
+  minimaxBaseUrl,
+  minimaxModels,
 } = require('./utils');
 
 const STATE_DIR = (process.env.OPENCLAW_STATE_DIR || "/data/.openclaw").replace(/\/+$/, "");
@@ -200,19 +203,19 @@ if (process.env.VENICE_API_KEY) {
 }
 
 // MiniMax (Anthropic-compatible)
-// Global endpoint: https://api.minimax.io/anthropic
-// China endpoint:  https://api.minimaxi.com/anthropic (override with MINIMAX_BASE_URL)
+// Chat base URL: MINIMAX_BASE_URL (global https://api.minimax.io/anthropic,
+// China https://api.minimaxi.com/anthropic). Image generation and TTS follow
+// upstream MINIMAX_API_HOST instead of this URL.
+// M2.1 stays in the list so a saved primary of minimax/MiniMax-M2.1 still
+// resolves. An existing primary is never overwritten below.
 if (process.env.MINIMAX_API_KEY) {
   console.log("[configure] configuring MiniMax provider");
   ensure(config, "models", "providers");
   config.models.providers.minimax = {
     api: "anthropic-messages",
     apiKey: process.env.MINIMAX_API_KEY,
-    baseUrl: (process.env.MINIMAX_BASE_URL || "https://api.minimax.io/anthropic").replace(/\/+$/, ""),
-    models: [
-      { id: "MiniMax-M3", name: "MiniMax M3", contextWindow: 1000000 },
-      { id: "MiniMax-M2.7", name: "MiniMax M2.7", contextWindow: 204800 },
-    ],
+    baseUrl: minimaxBaseUrl(process.env.MINIMAX_BASE_URL),
+    models: minimaxModels(),
   };
 } else {
   removeProvider("minimax", "MiniMax", "MINIMAX_API_KEY");
@@ -350,7 +353,7 @@ const primaryCandidates = [
   [process.env.VENICE_API_KEY,         "venice/llama-3.3-70b"],
   [process.env.MOONSHOT_API_KEY,       "moonshot/kimi-k2.5"],
   [process.env.KIMI_API_KEY,           "kimi-coding/k2p5"],
-  [process.env.MINIMAX_API_KEY,        "minimax/MiniMax-M3"],
+  [process.env.MINIMAX_API_KEY,        MINIMAX_PRIMARY_MODEL],
   [process.env.SYNTHETIC_API_KEY,      "synthetic/hf:MiniMaxAI/MiniMax-M2.1"],
   [process.env.ZAI_API_KEY,            "zai/glm-4.7"],
   [process.env.AI_GATEWAY_API_KEY,     "vercel-ai-gateway/anthropic/claude-opus-4.5"],
