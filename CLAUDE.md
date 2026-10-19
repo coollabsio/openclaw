@@ -65,15 +65,17 @@ Complex keys (`presets`, `mappings`, `transformsDir`) are JSON-only — not expo
 
 Docs: https://docs.openclaw.ai/automation/webhook
 
-### Browser env vars (6 total)
+### Browser env vars (7 total)
 
 Gate: `BROWSER_CDP_URL` (required to activate).
 
 Strings: `BROWSER_CDP_URL`, `BROWSER_SNAPSHOT_MODE`, `BROWSER_DEFAULT_PROFILE`
-Booleans: `BROWSER_EVALUATE_ENABLED`
+Booleans: `BROWSER_EVALUATE_ENABLED`, `BROWSER_SSRF_ALLOW_COMPOSE_SIDECAR`
 Numbers: `BROWSER_REMOTE_TIMEOUT_MS`, `BROWSER_REMOTE_HANDSHAKE_TIMEOUT_MS`
 
 Merge behavior: same as Telegram/Discord/Slack (merge, custom JSON keys preserved).
+
+When the effective CDP hostname is exactly `browser` (the Compose sidecar), `configure.js` adds that hostname to `browser.ssrfPolicy.allowedHostnames` after the JSON and dot-notation merge. `BROWSER_SSRF_ALLOW_COMPOSE_SIDECAR=false` (or `0`) skips the add. `dangerouslyAllowPrivateNetwork` is never set automatically. A hostname already listed in `blockedHostnames` is not re-allowed.
 
 Docs: https://docs.openclaw.ai/tools/browser
 

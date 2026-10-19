@@ -517,6 +517,172 @@ function minimaxModels() {
   });
 }
 
+// ── Compose browser sidecar SSRF ────────────────────────────────────────────
+//
+// OpenClaw's browser SSRF policy blocks private and special-use addresses
+// unless the operator opts in. The official Compose service name `browser`
+// resolves to a private container address, so CDP at http://browser:9223 is
+// rejected before any HTTP request. Allowing that exact hostname is the narrow
+// exception OpenClaw honors (allowedHostnames skips the private-network check
+// for that name only). dangerouslyAllowPrivateNetwork is never set here.
+
+const COMPOSE_BROWSER_SIDECAR_HOSTNAME = 'browser';
+
+/**
+ * Lowercase exact host: trim, strip one pair of brackets, drop trailing dots.
+ * @param {string} value
+ * @returns {string}
+ */
+function normalizeExactHostname(value) {
+  if (typeof value !== 'string') return '';
+  let host = value.trim().toLowerCase().replace(/\.+$/, '');
+  if (host.startsWith('[') && host.endsWith(']') && host.length > 2) {
+    host = host.slice(1, -1);
+  }
+  return host;
+}
+
+/**
+ * Hostname of a CDP URL, or '' when the value is empty or not a URL.
+ * `browser:9223` (no scheme) does not count: WHATWG parses it as a scheme.
+ * @param {string} cdpUrl
+ * @returns {string}
+ */
+function cdpUrlHostname(cdpUrl) {
+  if (typeof cdpUrl !== 'string' || !cdpUrl.trim()) return '';
+  try {
+    return normalizeExactHostname(new URL(cdpUrl.trim()).hostname);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * CDP URLs from the top-level browser block and from each profile.
+ * @param {object|undefined|null} browserConfig
+ * @returns {string[]}
+ */
+function browserCdpUrls(browserConfig) {
+  if (!browserConfig || typeof browserConfig !== 'object' || Array.isArray(browserConfig)) {
+    return [];
+  }
+  const urls = [];
+  if (typeof browserConfig.cdpUrl === 'string') urls.push(browserConfig.cdpUrl);
+  const profiles = browserConfig.profiles;
+  if (profiles && typeof profiles === 'object' && !Array.isArray(profiles)) {
+    for (const profile of Object.values(profiles)) {
+      if (
+        profile &&
+        typeof profile === 'object' &&
+        !Array.isArray(profile) &&
+        typeof profile.cdpUrl === 'string'
+      ) {
+        urls.push(profile.cdpUrl);
+      }
+    }
+  }
+  return urls;
+}
+
+/**
+ * Hostnames from an allow/block list. Accepts an array or a JSON-array string
+ * (the dot-notation form without the `[]` suffix stores that string).
+ * @param {unknown} value
+ * @returns {string[]}
+ */
+function hostnameEntries(value) {
+  let items = value;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+    if (REGEX.JSON_STARTS_WITH_ARRAY.test(trimmed)) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        items = Array.isArray(parsed) ? parsed : [trimmed];
+      } catch {
+        items = [trimmed];
+      }
+    } else {
+      items = [trimmed];
+    }
+  }
+  if (!Array.isArray(items)) return [];
+
+  const out = [];
+  const seen = new Set();
+  for (const item of items) {
+    if (typeof item !== 'string') continue;
+    const trimmed = item.trim();
+    if (!trimmed) continue;
+    const key = normalizeExactHostname(trimmed);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+/**
+ * True when blockedHostnames contains the exact hostname.
+ * @param {object|undefined|null} policy
+ * @param {string} hostname
+ * @returns {boolean}
+ */
+function ssrfPolicyBlocksHostname(policy, hostname) {
+  if (!policy || typeof policy !== 'object' || Array.isArray(policy)) return false;
+  const target = normalizeExactHostname(hostname);
+  return hostnameEntries(policy.blockedHostnames).some(
+    (host) => normalizeExactHostname(host) === target,
+  );
+}
+
+/**
+ * Copy of policy with the Compose sidecar hostname appended to allowedHostnames.
+ * Other policy fields are kept. A list that already contains the hostname is
+ * returned as-is, except a JSON-string list is rewritten to a real array so
+ * the strict schema accepts it. Does not set dangerouslyAllowPrivateNetwork.
+ * @param {object|undefined|null} policy
+ * @returns {object}
+ */
+function allowComposeBrowserSidecar(policy) {
+  const current = policy && typeof policy === 'object' && !Array.isArray(policy) ? policy : {};
+  const allowed = hostnameEntries(current.allowedHostnames);
+  const already = allowed.some(
+    (host) => normalizeExactHostname(host) === COMPOSE_BROWSER_SIDECAR_HOSTNAME,
+  );
+  if (already && Array.isArray(current.allowedHostnames)) {
+    return current;
+  }
+  return {
+    ...current,
+    allowedHostnames: already ? allowed : [...allowed, COMPOSE_BROWSER_SIDECAR_HOSTNAME],
+  };
+}
+
+/**
+ * Whether the effective browser config should trust the Compose sidecar host.
+ * Opt out with BROWSER_SSRF_ALLOW_COMPOSE_SIDECAR=false or 0. Any other value,
+ * including unset, still requires the CDP hostname to be exactly `browser`.
+ * @param {object|undefined|null} browserConfig
+ * @param {string|undefined} optOutValue
+ * @returns {{action: 'skip'|'opt-out'|'blocked'|'already'|'allow', ssrfPolicy?: object}}
+ */
+function resolveComposeBrowserSidecarSsrF(browserConfig, optOutValue) {
+  const targetsSidecar = browserCdpUrls(browserConfig).some(
+    (url) => cdpUrlHostname(url) === COMPOSE_BROWSER_SIDECAR_HOSTNAME,
+  );
+  if (!targetsSidecar) return { action: 'skip' };
+  if (optOutValue === 'false' || optOutValue === '0') return { action: 'opt-out' };
+
+  const previous = browserConfig && browserConfig.ssrfPolicy;
+  if (ssrfPolicyBlocksHostname(previous, COMPOSE_BROWSER_SIDECAR_HOSTNAME)) {
+    return { action: 'blocked' };
+  }
+  const next = allowComposeBrowserSidecar(previous);
+  if (next === previous) return { action: 'already', ssrfPolicy: next };
+  return { action: 'allow', ssrfPolicy: next };
+}
+
 module.exports = {
   REGEX,
   ENV_VAR,
@@ -540,4 +706,9 @@ module.exports = {
   reconcileStaleOllamaPrimary,
   OPENAI_COMPATIBLE_PROVIDER_ID,
   resolveOpenAICompatibleProvider,
+  COMPOSE_BROWSER_SIDECAR_HOSTNAME,
+  cdpUrlHostname,
+  browserCdpUrls,
+  allowComposeBrowserSidecar,
+  resolveComposeBrowserSidecarSsrF,
 };
