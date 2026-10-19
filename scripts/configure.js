@@ -14,6 +14,7 @@ const {
   coerceType,
   parseArrayValue,
   parseAllowedOrigins,
+  coolifyAllowedOrigins,
 } = require('./utils');
 
 const STATE_DIR = (process.env.OPENCLAW_STATE_DIR || "/data/.openclaw").replace(/\/+$/, "");
@@ -687,13 +688,13 @@ function applyAllowedOrigins() {
     }
   }
 
-  // Automatically inject Coolify's FQDN if we are running in a Coolify environment
-  const rawFqdn = process.env.COOLIFY_FQDN || process.env.COOLIFY_URL;
-  if (rawFqdn) {
-    const cleanFqdn = rawFqdn.replace(/\/+$/, "");
-    if (cleanFqdn && !origins.includes(cleanFqdn)) {
-      origins.push(cleanFqdn);
-      console.log(`[configure] injected Coolify origin: ${cleanFqdn}`);
+  // Coolify (v4.0.0-beta.420+) puts the real scheme on COOLIFY_URL and bare
+  // hostnames on COOLIFY_FQDN. Either value may be a comma-separated list.
+  const injected = coolifyAllowedOrigins(process.env.COOLIFY_URL, process.env.COOLIFY_FQDN);
+  for (const coolifyOrigin of injected) {
+    if (!origins.includes(coolifyOrigin)) {
+      origins.push(coolifyOrigin);
+      console.log(`[configure] injected Coolify origin: ${coolifyOrigin}`);
     }
   }
 

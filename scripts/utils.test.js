@@ -4,6 +4,11 @@
  * No test framework — run with: node scripts/utils.test.js
  */
 
+const { spawnSync } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
 const {
   REGEX,
   ENV_VAR,
@@ -11,6 +16,9 @@ const {
   coerceType,
   parseArrayValue,
   parseAllowedOrigins,
+  normalizeCoolifyOrigin,
+  normalizeCoolifyOrigins,
+  coolifyAllowedOrigins,
 } = require('./utils');
 
 let passed = 0;
@@ -143,6 +151,173 @@ throws(
 throws(
   () => parseAllowedOrigins('['),
   'bare bracket throws'
+);
+
+// ── normalizeCoolifyOrigin ──────────────────────────────────────────────────
+
+console.log('normalizeCoolifyOrigin');
+
+eq(
+  normalizeCoolifyOrigin('app.example.com'),
+  'https://app.example.com',
+  'bare hostname defaults to https'
+);
+eq(
+  normalizeCoolifyOrigin('app.example.com/'),
+  'https://app.example.com',
+  'bare hostname drops trailing slash'
+);
+eq(
+  normalizeCoolifyOrigin(' https://app.example.com/ '),
+  'https://app.example.com',
+  'https origin is preserved and trimmed'
+);
+eq(
+  normalizeCoolifyOrigin('http://localhost:8080/'),
+  'http://localhost:8080',
+  'explicit http origin is preserved'
+);
+eq(
+  normalizeCoolifyOrigin(''),
+  '',
+  'empty value stays empty'
+);
+eq(
+  normalizeCoolifyOrigin(' / '),
+  '',
+  'slash-only value becomes empty'
+);
+eq(
+  normalizeCoolifyOrigin('HTTPS://App.Example.COM:443/ui/'),
+  'https://app.example.com',
+  'explicit :443, path, and host case collapse to the browser origin'
+);
+eq(
+  normalizeCoolifyOrigin('http://127.0.0.1:80/path'),
+  'http://127.0.0.1',
+  'default http port and path are removed'
+);
+eq(
+  normalizeCoolifyOrigin('not a host'),
+  '',
+  'invalid entry becomes empty'
+);
+
+// ── normalizeCoolifyOrigins / coolifyAllowedOrigins ─────────────────────────
+
+console.log('normalizeCoolifyOrigins');
+
+eq(
+  normalizeCoolifyOrigins('a.com,b.com'),
+  ['https://a.com', 'https://b.com'],
+  'comma-separated bare hosts are split, not joined into one origin'
+);
+eq(
+  normalizeCoolifyOrigins(' a.com , b.com , '),
+  ['https://a.com', 'https://b.com'],
+  'comma list entries are trimmed and empty slots dropped'
+);
+eq(
+  normalizeCoolifyOrigins('https://a.example.com/ui, http://b.example.com:8443/path'),
+  ['https://a.example.com', 'http://b.example.com:8443'],
+  'each URL keeps its scheme; paths are stripped'
+);
+eq(
+  normalizeCoolifyOrigins('https://App.Example.com:443/,https://app.example.com/other'),
+  ['https://app.example.com'],
+  'port, case, and path variants collapse to one origin'
+);
+eq(
+  normalizeCoolifyOrigins('https://ok.example.com, not a host, https://also.example.com'),
+  ['https://ok.example.com', 'https://also.example.com'],
+  'invalid list entries are skipped'
+);
+eq(normalizeCoolifyOrigins(''), [], 'empty list stays empty');
+eq(normalizeCoolifyOrigins(' , '), [], 'comma-only list stays empty');
+
+console.log('coolifyAllowedOrigins');
+
+eq(
+  coolifyAllowedOrigins('http://app.example.com/admin', 'app.example.com'),
+  ['http://app.example.com'],
+  'scheme comes from COOLIFY_URL when both variables are set'
+);
+eq(
+  coolifyAllowedOrigins('https://A.Example.com:443/ui,http://b.example.com', 'ignored.example.com'),
+  ['https://a.example.com', 'http://b.example.com'],
+  'COOLIFY_URL comma list is normalized and COOLIFY_FQDN is not also used'
+);
+eq(
+  coolifyAllowedOrigins(undefined, 'a.com, b.com'),
+  ['https://a.com', 'https://b.com'],
+  'bare COOLIFY_FQDN is the fallback and defaults to https'
+);
+eq(
+  coolifyAllowedOrigins('   ', 'app.example.com'),
+  ['https://app.example.com'],
+  'blank COOLIFY_URL falls through to COOLIFY_FQDN'
+);
+eq(
+  coolifyAllowedOrigins(undefined, undefined),
+  [],
+  'missing Coolify variables add nothing'
+);
+
+// configure.js wires the helper and must keep manual origins without duplicates.
+console.log('configure.js Coolify origins');
+
+function readConfiguredOrigins(env) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-origins-'));
+  try {
+    const result = spawnSync(process.execPath, [path.join(__dirname, 'configure.js')], {
+      encoding: 'utf8',
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        ANTHROPIC_API_KEY: 'test-key',
+        OPENCLAW_STATE_DIR: dir,
+        OPENCLAW_WORKSPACE_DIR: path.join(dir, 'workspace'),
+        OPENCLAW_CONFIG_PATH: path.join(dir, 'openclaw.json'),
+        OPENCLAW_CUSTOM_CONFIG: path.join(dir, 'missing-custom.json'),
+        ...env,
+      },
+    });
+    assert(result.status === 0, `configure.js exits 0 (${env && JSON.stringify(env)})`);
+    if (result.status !== 0) {
+      console.error(result.stdout);
+      console.error(result.stderr);
+      return null;
+    }
+    const written = JSON.parse(fs.readFileSync(path.join(dir, 'openclaw.json'), 'utf8'));
+    const origins = written.gateway
+      && written.gateway.controlUi
+      && written.gateway.controlUi.allowedOrigins;
+    return origins || [];
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+eq(
+  readConfiguredOrigins({
+    COOLIFY_URL: 'http://app.example.com/ui, https://APP.Example.com:443/',
+    COOLIFY_FQDN: 'ignored.example.com',
+    OPENCLAW_ALLOWED_ORIGINS: 'http://localhost:5173,https://app.example.com',
+  }),
+  ['http://localhost:5173', 'https://app.example.com', 'http://app.example.com'],
+  'manual origins are preserved, Coolify scheme/path/case applied, no duplicates'
+);
+eq(
+  readConfiguredOrigins({
+    COOLIFY_FQDN: 'a.com, b.com',
+  }),
+  ['https://a.com', 'https://b.com'],
+  'configure.js falls back to a comma-separated COOLIFY_FQDN'
+);
+eq(
+  readConfiguredOrigins({}),
+  [],
+  'configure.js adds no origins when Coolify variables are unset'
 );
 
 // ── REGEX patterns ──────────────────────────────────────────────────────────
