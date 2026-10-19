@@ -1,0 +1,8 @@
+#!/bin/bash
+# DevTools must use a debugging port. Chromium still binds it to 127.0.0.1;
+# browser/cdp-proxy.conf publishes it on 9223. Flags are before CHROME_CLI
+# ("$@") so a later --remote-debugging-port or --user-data-dir wins.
+exec /usr/bin/wrapped-chromium.real \
+  --remote-debugging-port=9222 \
+  --remote-allow-origins=* \
+  "$@"

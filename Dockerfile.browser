@@ -1,10 +1,11 @@
 FROM lscr.io/linuxserver/chromium:latest
 
-# Nginx CDP reverse proxy config (rewrites Host header to localhost so Chrome accepts the connection)
-RUN mkdir -p /etc/s6-overlay/s6-rc.d/nginx-cdp && \
-    echo "longrun" > /etc/s6-overlay/s6-rc.d/nginx-cdp/type && \
-    printf '#!/command/execlineb -P\nnginx -c /etc/nginx/cdp-proxy.conf -g "daemon off;"\n' > /etc/s6-overlay/s6-rc.d/nginx-cdp/run && \
-    chmod +x /etc/s6-overlay/s6-rc.d/nginx-cdp/run && \
-    touch /etc/s6-overlay/s6-rc.d/user/contents.d/nginx-cdp
+# Selkies already runs nginx. Its svc-nginx runbook kills every nginx process
+# and the master uses /run/nginx.pid, so a second CDP nginx never stays up.
+# conf.d is included by that existing server and is left alone by init-nginx.
+COPY browser/cdp-proxy.conf /etc/nginx/conf.d/cdp-proxy.conf
 
-RUN printf 'events {}\nhttp {\n  server {\n    listen 9223;\n    location / {\n      proxy_pass http://127.0.0.1:9222;\n      proxy_set_header Host localhost;\n      proxy_http_version 1.1;\n      proxy_set_header Upgrade $http_upgrade;\n      proxy_set_header Connection "upgrade";\n      proxy_read_timeout 86400s;\n    }\n  }\n}\n' > /etc/nginx/cdp-proxy.conf
+# Always pass a DevTools port. CHROME_CLI is appended and can still override it.
+RUN mv /usr/bin/wrapped-chromium /usr/bin/wrapped-chromium.real
+COPY browser/wrapped-chromium /usr/bin/wrapped-chromium
+RUN chmod 755 /usr/bin/wrapped-chromium && nginx -t

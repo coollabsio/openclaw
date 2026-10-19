@@ -25,6 +25,8 @@ services:
 
   browser:
     image: openclaw-browser:local
+    # CDP stays on the compose network at http://browser:9223. Do not publish
+    # 9222 or 9223. See docker-compose.yml.
     environment:
       - PUID=1000
       - PGID=1000

@@ -35,7 +35,10 @@ services:
 
   browser:
     image: coollabsio/openclaw-browser:latest
-    # No port exposure needed — proxied via openclaw at /browser/
+    # Desktop UI is proxied through openclaw at /browser/ (container port 3000).
+    # CDP is http://browser:9223 on this compose network only. Chromium itself
+    # listens on 127.0.0.1:9222; the image proxies that to 0.0.0.0:9223.
+    # Do not publish 9222 or 9223 — DevTools is full browser control.
     environment:
       - PUID=1000
       - PGID=1000
