@@ -1387,6 +1387,20 @@ eq(
   { allowedHostnames: ['keep.internal', 'browser'] },
   'a single hostname string is kept and the sidecar is appended'
 );
+eq(
+  allowComposeBrowserSidecar({
+    allowedHostnames: '["keep.internal"]',
+    blockedHostnames: '["nope.internal"]',
+    hostnameAllowlist: ['not-in-schema'],
+    dangerouslyAllowPrivateNetwork: 'true',
+  }),
+  { allowedHostnames: ['keep.internal', 'browser'], blockedHostnames: ['nope.internal'] },
+  'doctor-facing policy is schema keys only, with hostname lists as arrays'
+);
+{
+  const strict = { allowedHostnames: ['browser'], blockedHostnames: [] };
+  eq(allowComposeBrowserSidecar(strict), strict, 'a strict policy that already allows the sidecar is not copied');
+}
 
 eq(
   resolveComposeBrowserSidecarSsrF({ cdpUrl: 'http://10.1.2.3:9222' }, undefined),
@@ -1403,6 +1417,25 @@ eq(
   { action: 'skip' },
   'a lookalike hostname does not auto-allow'
 );
+for (const [url, label] of [
+  ['http://127.0.0.1:9222', 'loopback literal'],
+  ['http://localhost:9222', 'localhost'],
+  ['http://169.254.169.254/', 'cloud metadata address'],
+  ['http://172.17.0.2:9223', 'RFC1918 literal'],
+  ['http://100.64.1.5:9223', 'CGNAT literal'],
+  ['http://[fd00::1]:9223', 'IPv6 ULA literal'],
+  ['http://host.docker.internal:9223', 'host.docker.internal'],
+  ['http://browser.local:9223', '.local name'],
+  ['http://chrome:9223', 'a single-label name other than browser'],
+  ['http://1.1.1.1:9222', 'public IP literal'],
+  ['http://browser.lan:9223', 'dotted private name'],
+]) {
+  eq(
+    resolveComposeBrowserSidecarSsrF({ cdpUrl: url }, undefined),
+    { action: 'skip' },
+    `${label} does not auto-allow`
+  );
+}
 eq(
   resolveComposeBrowserSidecarSsrF(undefined, undefined),
   { action: 'skip' },
@@ -1521,6 +1554,10 @@ function browserPolicyOf(written) {
   eq(written && written.config.browser.defaultProfile, 'openclaw', 'configure.js keeps the default profile');
   eq(browserPolicyOf(written), { allowedHostnames: ['browser'] }, 'configure.js allowlists only hostname browser');
   assert(
+    Array.isArray(browserPolicyOf(written).allowedHostnames),
+    'configure.js writes allowedHostnames as an array so doctor --fix keeps it'
+  );
+  assert(
     written && written.output.includes('Compose sidecar hostname "browser" allowed'),
     'configure.js logs the narrow SSRF allowance',
   );
@@ -1531,8 +1568,28 @@ function browserPolicyOf(written) {
 }
 
 {
+  const written = runBrowserConfigure({
+    BROWSER_CDP_URL: 'http://browser:9223',
+    BROWSER_EVALUATE_ENABLED: 'true',
+  });
+  eq(written && written.config.browser.evaluateEnabled, true, 'configure.js still writes evaluateEnabled');
+  eq(browserPolicyOf(written), { allowedHostnames: ['browser'] }, 'evaluateEnabled does not change the SSRF allowance');
+}
+{
   const written = runBrowserConfigure({ BROWSER_CDP_URL: 'http://192.168.1.10:9222' });
   assert(browserPolicyOf(written) === undefined, 'a private IP CDP URL does not gain an SSRF policy');
+}
+{
+  const written = runBrowserConfigure({ BROWSER_CDP_URL: 'http://169.254.169.254/' });
+  assert(browserPolicyOf(written) === undefined, 'the metadata address does not gain an SSRF policy');
+}
+{
+  const written = runBrowserConfigure({ BROWSER_CDP_URL: 'http://chrome:9223' });
+  assert(browserPolicyOf(written) === undefined, 'another single-label Docker name does not gain an SSRF policy');
+}
+{
+  const written = runBrowserConfigure({ BROWSER_CDP_URL: 'http://host.docker.internal:9223' });
+  assert(browserPolicyOf(written) === undefined, 'host.docker.internal does not gain an SSRF policy');
 }
 {
   const written = runBrowserConfigure({ BROWSER_CDP_URL: 'https://chrome.browserless.io' });

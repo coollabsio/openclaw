@@ -525,8 +525,22 @@ function minimaxModels() {
 // rejected before any HTTP request. Allowing that exact hostname is the narrow
 // exception OpenClaw honors (allowedHostnames skips the private-network check
 // for that name only). dangerouslyAllowPrivateNetwork is never set here.
+//
+// OpenClaw 2026.10.5 validates this object with a strict schema, and
+// `openclaw doctor --fix` rewrites openclaw.json through that schema on every
+// start. allowedHostnames and blockedHostnames have to be arrays of strings.
+// A JSON-string list, or any key the schema does not know, makes the object
+// invalid and doctor drops the allowance. The rewrite below keeps only the
+// schema keys.
 
 const COMPOSE_BROWSER_SIDECAR_HOSTNAME = 'browser';
+
+// Keys of SsrFPolicyConfigSchema (zod strictObject) in OpenClaw 2026.10.5.
+const SSRF_POLICY_BOOLEAN_KEYS = [
+  'dangerouslyAllowPrivateNetwork',
+  'allowRfc2544BenchmarkRange',
+  'allowIpv6UniqueLocalRange',
+];
 
 /**
  * Lowercase exact host: trim, strip one pair of brackets, drop trailing dots.
@@ -637,10 +651,30 @@ function ssrfPolicyBlocksHostname(policy, hostname) {
 }
 
 /**
+ * True when policy is already a strict SsrFPolicyConfigSchema object.
+ * @param {object} policy
+ * @returns {boolean}
+ */
+function ssrfPolicyShapeIsStrict(policy) {
+  const allowedKeys = new Set([...SSRF_POLICY_BOOLEAN_KEYS, 'allowedHostnames', 'blockedHostnames']);
+  if (Object.keys(policy).some((key) => !allowedKeys.has(key))) return false;
+  for (const key of SSRF_POLICY_BOOLEAN_KEYS) {
+    if (key in policy && typeof policy[key] !== 'boolean') return false;
+  }
+  for (const key of ['allowedHostnames', 'blockedHostnames']) {
+    if (!(key in policy)) continue;
+    const list = policy[key];
+    if (!Array.isArray(list) || list.some((item) => typeof item !== 'string')) return false;
+  }
+  return true;
+}
+
+/**
  * Copy of policy with the Compose sidecar hostname appended to allowedHostnames.
- * Other policy fields are kept. A list that already contains the hostname is
- * returned as-is, except a JSON-string list is rewritten to a real array so
- * the strict schema accepts it. Does not set dangerouslyAllowPrivateNetwork.
+ * Known policy fields are kept. Hostname lists are real string arrays, and
+ * keys outside SsrFPolicyConfigSchema are dropped, so doctor --fix keeps the
+ * allowance. A list that already contains the hostname and is already strict
+ * is returned as the same object. Does not set dangerouslyAllowPrivateNetwork.
  * @param {object|undefined|null} policy
  * @returns {object}
  */
@@ -650,13 +684,32 @@ function allowComposeBrowserSidecar(policy) {
   const already = allowed.some(
     (host) => normalizeExactHostname(host) === COMPOSE_BROWSER_SIDECAR_HOSTNAME,
   );
-  if (already && Array.isArray(current.allowedHostnames)) {
+  if (already && ssrfPolicyShapeIsStrict(current)) {
     return current;
   }
-  return {
-    ...current,
-    allowedHostnames: already ? allowed : [...allowed, COMPOSE_BROWSER_SIDECAR_HOSTNAME],
-  };
+
+  const allowedHostnames = already ? allowed : [...allowed, COMPOSE_BROWSER_SIDECAR_HOSTNAME];
+  const next = {};
+  let wroteAllowed = false;
+  for (const key of Object.keys(current)) {
+    if (key === 'allowedHostnames') {
+      next.allowedHostnames = allowedHostnames;
+      wroteAllowed = true;
+      continue;
+    }
+    if (key === 'blockedHostnames') {
+      const blocked = hostnameEntries(current.blockedHostnames);
+      if (Array.isArray(current.blockedHostnames) || blocked.length > 0) {
+        next.blockedHostnames = blocked;
+      }
+      continue;
+    }
+    if (SSRF_POLICY_BOOLEAN_KEYS.includes(key) && typeof current[key] === 'boolean') {
+      next[key] = current[key];
+    }
+  }
+  if (!wroteAllowed) next.allowedHostnames = allowedHostnames;
+  return next;
 }
 
 /**
