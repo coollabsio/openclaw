@@ -24,6 +24,7 @@ const {
   restoreCustomOllamaModels,
   ollamaPrimaryModel,
   reconcileStaleOllamaPrimary,
+  resolveOpenAICompatibleProvider,
 } = require('./utils');
 
 const STATE_DIR = (process.env.OPENCLAW_STATE_DIR || "/data/.openclaw").replace(/\/+$/, "");
@@ -345,6 +346,32 @@ if (ollamaUrl) {
 }
 restoreCustomOllamaModels(config, customOllamaModels);
 
+// OpenAI-compatible endpoint (LiteLLM, vLLM, LM Studio, LocalAI, ...).
+// Base URL and model are required — never default them to OpenAI.
+// The API key is optional for local servers without auth.
+const openAICompatible = resolveOpenAICompatibleProvider({
+  apiKey: process.env.OPENAI_COMPATIBLE_API_KEY,
+  baseUrl: process.env.OPENAI_COMPATIBLE_BASE_URL,
+  model: process.env.OPENAI_COMPATIBLE_MODEL,
+  existing: config.models?.providers?.["openai-compatible"],
+});
+if (openAICompatible.action === "apply") {
+  console.log("[configure] configuring OpenAI-compatible provider");
+  if (openAICompatible.warning) {
+    console.warn(openAICompatible.warning);
+  }
+  ensure(config, "models", "providers");
+  config.models.providers["openai-compatible"] = openAICompatible.provider;
+} else if (openAICompatible.action === "incomplete") {
+  console.warn(openAICompatible.warning);
+} else {
+  removeProvider(
+    "openai-compatible",
+    "OpenAI-Compatible",
+    "OPENAI_COMPATIBLE_BASE_URL+OPENAI_COMPATIBLE_MODEL",
+  );
+}
+
 // ── Primary model selection (first available provider wins) ─────────────────
 const ollamaPrimary = ollamaPrimaryModel(config);
 const primaryCandidates = [
@@ -368,6 +395,7 @@ const primaryCandidates = [
   [process.env.XIAOMI_API_KEY,         "xiaomi/mimo-v2-flash"],
   [process.env.AWS_ACCESS_KEY_ID,      "amazon-bedrock/anthropic.claude-opus-4-5-20251101-v1:0"],
   [ollamaUrl && ollamaPrimary,         ollamaPrimary],
+  [openAICompatible.modelRef,          openAICompatible.modelRef],
 ];
 if (process.env.OPENCLAW_PRIMARY_MODEL) {
   // Explicit env var override
@@ -767,7 +795,8 @@ const hasProvider =
   // Custom proxy providers also need env var keys
   !!process.env.VENICE_API_KEY || !!process.env.MINIMAX_API_KEY ||
   !!process.env.MOONSHOT_API_KEY || !!process.env.KIMI_API_KEY ||
-  !!process.env.SYNTHETIC_API_KEY || !!process.env.XIAOMI_API_KEY;
+  !!process.env.SYNTHETIC_API_KEY || !!process.env.XIAOMI_API_KEY ||
+  openAICompatible.action === "apply";
 
 if (!hasProvider) {
   console.error("[configure] ERROR: No AI provider API key set.");
@@ -776,7 +805,8 @@ if (!hasProvider) {
   console.error("[configure]   XAI_API_KEY, GROQ_API_KEY, MISTRAL_API_KEY, CEREBRAS_API_KEY, ZAI_API_KEY,");
   console.error("[configure]   AI_GATEWAY_API_KEY, OPENCODE_API_KEY, COPILOT_GITHUB_TOKEN, VENICE_API_KEY,");
   console.error("[configure]   MOONSHOT_API_KEY, KIMI_API_KEY, MINIMAX_API_KEY, SYNTHETIC_API_KEY, XIAOMI_API_KEY,");
-  console.error("[configure]   AWS_ACCESS_KEY_ID+AWS_SECRET_ACCESS_KEY (Bedrock), or OLLAMA_BASE_URL (local)");
+  console.error("[configure]   AWS_ACCESS_KEY_ID+AWS_SECRET_ACCESS_KEY (Bedrock), OLLAMA_BASE_URL (local),");
+  console.error("[configure]   or OPENAI_COMPATIBLE_BASE_URL+OPENAI_COMPATIBLE_MODEL (OpenAI-compatible; API key optional)");
   process.exit(1);
 }
 

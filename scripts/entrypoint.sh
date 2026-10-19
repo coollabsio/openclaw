@@ -83,6 +83,13 @@ for key in ANTHROPIC_API_KEY OPENAI_API_KEY OPENROUTER_API_KEY GEMINI_API_KEY \
 done
 [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ] && HAS_PROVIDER=1
 [ -n "${OLLAMA_BASE_URL:-}" ] && HAS_PROVIDER=1
+# Base URL and model are both required. A key alone must not count as a provider.
+# The key is optional for local servers and is never printed.
+if [ -n "${OPENAI_COMPATIBLE_BASE_URL:-}" ] && [ -n "${OPENAI_COMPATIBLE_MODEL:-}" ]; then
+  HAS_PROVIDER=1
+elif [ -n "${OPENAI_COMPATIBLE_API_KEY:-}" ] || [ -n "${OPENAI_COMPATIBLE_BASE_URL:-}" ] || [ -n "${OPENAI_COMPATIBLE_MODEL:-}" ]; then
+  echo "[entrypoint] WARNING: skipping OpenAI-compatible provider — OPENAI_COMPATIBLE_BASE_URL and OPENAI_COMPATIBLE_MODEL are required. OPENAI_COMPATIBLE_API_KEY is optional for local servers without auth."
+fi
 if [ "$HAS_PROVIDER" -eq 0 ]; then
   echo "[entrypoint] ERROR: At least one AI provider API key env var is required."
   echo "[entrypoint] Providers read API keys from env vars, never from the JSON config."
@@ -90,7 +97,8 @@ if [ "$HAS_PROVIDER" -eq 0 ]; then
   echo "[entrypoint]   XAI_API_KEY, GROQ_API_KEY, MISTRAL_API_KEY, CEREBRAS_API_KEY, VENICE_API_KEY,"
   echo "[entrypoint]   MOONSHOT_API_KEY, KIMI_API_KEY, MINIMAX_API_KEY, ZAI_API_KEY, AI_GATEWAY_API_KEY,"
   echo "[entrypoint]   OPENCODE_API_KEY, SYNTHETIC_API_KEY, COPILOT_GITHUB_TOKEN, XIAOMI_API_KEY"
-  echo "[entrypoint] Or: AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY (Bedrock), OLLAMA_BASE_URL (local)"
+  echo "[entrypoint] Or: AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY (Bedrock), OLLAMA_BASE_URL (local),"
+  echo "[entrypoint]   or OPENAI_COMPATIBLE_BASE_URL + OPENAI_COMPATIBLE_MODEL (OpenAI-compatible; API key optional)"
   exit 1
 fi
 
