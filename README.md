@@ -68,7 +68,7 @@ Two-layer Docker build:
 
 ```
 .github/workflows/auto-update.yml   — cron every 6h, check openclaw releases, build+push
-.github/workflows/build.yml         — CI on push/PR (build only, no push)
+.github/workflows/build.yml         — CI on push/PR; builds the latest upstream release (no push)
 Dockerfile.base                     — multi-stage: build openclaw from source → slim runtime
 Dockerfile                          — FROM base, add nginx + config scripts + entrypoint
 scripts/configure.js                — reads env vars, writes/patches openclaw.json
@@ -115,7 +115,7 @@ Triggers: `schedule: '0 */6 * * *'` + `workflow_dispatch` (version, force_rebuil
 | `VENICE_API_KEY` | Venice AI API key (OpenAI-compatible). Configures Llama 3.3 70B. |
 | `MOONSHOT_API_KEY` | Moonshot API key (OpenAI-compatible). Configures Kimi K2.5. |
 | `KIMI_API_KEY` | Kimi Coding API key (Anthropic-compatible). Configures K2P5. |
-| `MINIMAX_API_KEY` | MiniMax API key (Anthropic-compatible). Configures MiniMax M2.1. |
+| `MINIMAX_API_KEY` | MiniMax API key (Anthropic-compatible). Configures MiniMax M3 (default), M2.7, and M2.1. |
 | `ZAI_API_KEY` | ZAI API key. Configures GLM models. |
 | `AI_GATEWAY_API_KEY` | Vercel AI Gateway API key. |
 | `OPENCODE_API_KEY` | OpenCode API key. Also accepted as `OPENCODE_ZEN_API_KEY`. |
@@ -343,6 +343,11 @@ If a channel env var is removed, that channel is cleaned from config on next sta
 | `ANTHROPIC_BASE_URL` | Override Anthropic API base URL specifically. |
 | `MOONSHOT_BASE_URL` | Override Moonshot API base URL. Default: `https://api.moonshot.ai/v1`. |
 | `KIMI_BASE_URL` | Override Kimi Coding API base URL. Default: `https://api.moonshot.ai/anthropic`. |
+| `MINIMAX_BASE_URL` | Override the MiniMax Anthropic-compatible chat base URL. Default: `https://api.minimax.io/anthropic` (global). China: `https://api.minimaxi.com/anthropic`. |
+
+`MINIMAX_BASE_URL` is only the chat provider URL (`models.providers.minimax.baseUrl`). Image generation and text-to-speech ignore it. For those, set upstream OpenClaw's `MINIMAX_API_HOST` to the host with no `/anthropic` suffix (`https://api.minimax.io` by default, `https://api.minimaxi.com` for China). Music and video use the origin of the chat base URL, so a China `MINIMAX_BASE_URL` already sends them to `api.minimaxi.com`.
+
+A saved primary of `minimax/MiniMax-M2.1` is left unchanged, and M2.1 stays in the model list so that primary still resolves. When no primary is set, MiniMax auto-selects `minimax/MiniMax-M3`.
 
 ### Extra system packages (optional)
 

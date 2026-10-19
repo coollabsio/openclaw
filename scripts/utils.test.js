@@ -19,6 +19,11 @@ const {
   normalizeCoolifyOrigin,
   normalizeCoolifyOrigins,
   coolifyAllowedOrigins,
+  MINIMAX_GLOBAL_BASE_URL,
+  MINIMAX_CN_BASE_URL,
+  MINIMAX_PRIMARY_MODEL,
+  minimaxBaseUrl,
+  minimaxModels,
   normalizeOllamaBaseUrl,
   readCustomOllamaModels,
   applyOllamaBaseUrl,
@@ -324,6 +329,149 @@ eq(
   readConfiguredOrigins({}),
   [],
   'configure.js adds no origins when Coolify variables are unset'
+);
+
+// ── MiniMax catalog ─────────────────────────────────────────────────────────
+
+console.log('minimax');
+
+eq(MINIMAX_GLOBAL_BASE_URL, 'https://api.minimax.io/anthropic', 'global MiniMax base URL');
+eq(MINIMAX_CN_BASE_URL, 'https://api.minimaxi.com/anthropic', 'China MiniMax base URL');
+eq(MINIMAX_PRIMARY_MODEL, 'minimax/MiniMax-M3', 'auto primary is MiniMax-M3');
+
+eq(minimaxBaseUrl(undefined), MINIMAX_GLOBAL_BASE_URL, 'missing base URL uses global');
+eq(minimaxBaseUrl(null), MINIMAX_GLOBAL_BASE_URL, 'null base URL uses global');
+eq(minimaxBaseUrl(''), MINIMAX_GLOBAL_BASE_URL, 'empty base URL uses global');
+eq(minimaxBaseUrl('   '), MINIMAX_GLOBAL_BASE_URL, 'whitespace base URL uses global');
+eq(minimaxBaseUrl(MINIMAX_CN_BASE_URL), MINIMAX_CN_BASE_URL, 'China base URL is kept');
+eq(
+  minimaxBaseUrl(`${MINIMAX_CN_BASE_URL}/`),
+  MINIMAX_CN_BASE_URL,
+  'one trailing slash is stripped'
+);
+eq(
+  minimaxBaseUrl(`  ${MINIMAX_GLOBAL_BASE_URL}///  `),
+  MINIMAX_GLOBAL_BASE_URL,
+  'surrounding space and extra slashes are stripped'
+);
+
+const minimaxCatalog = minimaxModels();
+eq(
+  minimaxCatalog.map((model) => model.id),
+  ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.1'],
+  'catalog is M3, M2.7, and legacy M2.1'
+);
+
+const minimaxM3 = minimaxCatalog[0];
+eq(minimaxM3.name, 'MiniMax M3', 'M3 display name');
+eq(minimaxM3.reasoning, true, 'M3 is a reasoning model');
+eq(minimaxM3.input, ['text', 'image'], 'M3 accepts text and image');
+eq(minimaxM3.compat, { codeMode: 'preferred' }, 'M3 prefers code mode');
+eq(
+  minimaxM3.cost,
+  { input: 0.6, output: 2.4, cacheRead: 0.12, cacheWrite: 0 },
+  'M3 cost matches upstream'
+);
+eq(minimaxM3.contextWindow, 1000000, 'M3 context window is 1,000,000');
+eq(minimaxM3.maxTokens, 131072, 'M3 maxTokens is 131072');
+
+const minimaxM27 = minimaxCatalog[1];
+eq(minimaxM27.reasoning, true, 'M2.7 is a reasoning model');
+eq(minimaxM27.input, ['text'], 'M2.7 is text only');
+eq(minimaxM27.contextWindow, 204800, 'M2.7 context window is 204,800');
+eq(minimaxM27.maxTokens, 131072, 'M2.7 maxTokens is 131072');
+eq(
+  minimaxM27.cost,
+  { input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0.375 },
+  'M2.7 cost matches upstream'
+);
+assert(minimaxM27.compat === undefined, 'M2.7 has no code-mode compat flag');
+
+const minimaxM21 = minimaxCatalog[2];
+eq(minimaxM21.name, 'MiniMax M2.1', 'M2.1 display name');
+eq(minimaxM21.reasoning, true, 'M2.1 stays a reasoning model');
+eq(minimaxM21.input, ['text'], 'M2.1 is text only');
+eq(minimaxM21.contextWindow, 204800, 'M2.1 context window is 204,800');
+eq(minimaxM21.maxTokens, 131072, 'M2.1 maxTokens is 131072');
+
+const mutated = minimaxModels();
+mutated[0].input.push('video');
+mutated[0].cost.input = 0;
+eq(minimaxModels()[0].input, ['text', 'image'], 'catalog input is copied per call');
+eq(minimaxModels()[0].cost.input, 0.6, 'catalog cost is copied per call');
+
+function readMinimaxConfig(env, persisted) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-minimax-'));
+  const configPath = path.join(dir, 'openclaw.json');
+  try {
+    if (persisted) {
+      fs.writeFileSync(configPath, JSON.stringify(persisted));
+    }
+    const result = spawnSync(process.execPath, [path.join(__dirname, 'configure.js')], {
+      encoding: 'utf8',
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        OPENCLAW_STATE_DIR: dir,
+        OPENCLAW_WORKSPACE_DIR: path.join(dir, 'workspace'),
+        OPENCLAW_CONFIG_PATH: configPath,
+        OPENCLAW_CUSTOM_CONFIG: path.join(dir, 'missing-custom.json'),
+        MINIMAX_API_KEY: 'test-minimax-key',
+        ...env,
+      },
+    });
+    assert(result.status === 0, `configure.js MiniMax exits 0 (${JSON.stringify(env || {})})`);
+    if (result.status !== 0) {
+      console.error(result.stdout);
+      console.error(result.stderr);
+      return null;
+    }
+    return JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+console.log('configure.js MiniMax provider');
+
+const minimaxDefault = readMinimaxConfig();
+eq(
+  minimaxDefault && minimaxDefault.models.providers.minimax,
+  {
+    api: 'anthropic-messages',
+    apiKey: 'test-minimax-key',
+    baseUrl: MINIMAX_GLOBAL_BASE_URL,
+    models: minimaxModels(),
+  },
+  'configure.js writes the MiniMax catalog and global base URL'
+);
+eq(
+  minimaxDefault && minimaxDefault.agents.defaults.model.primary,
+  MINIMAX_PRIMARY_MODEL,
+  'configure.js auto-selects MiniMax-M3 when no primary is saved'
+);
+
+const minimaxChina = readMinimaxConfig({
+  MINIMAX_BASE_URL: `${MINIMAX_CN_BASE_URL}/`,
+});
+eq(
+  minimaxChina && minimaxChina.models.providers.minimax.baseUrl,
+  MINIMAX_CN_BASE_URL,
+  'configure.js applies a China MINIMAX_BASE_URL and strips the trailing slash'
+);
+
+const minimaxKept = readMinimaxConfig({}, {
+  agents: { defaults: { model: { primary: 'minimax/MiniMax-M2.1' } } },
+});
+eq(
+  minimaxKept && minimaxKept.agents.defaults.model.primary,
+  'minimax/MiniMax-M2.1',
+  'configure.js keeps a saved MiniMax-M2.1 primary'
+);
+assert(
+  minimaxKept
+    && minimaxKept.models.providers.minimax.models.some((model) => model.id === 'MiniMax-M2.1'),
+  'saved M2.1 primary still has a catalog entry'
 );
 
 // ── REGEX patterns ──────────────────────────────────────────────────────────
