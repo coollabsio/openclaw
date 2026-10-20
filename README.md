@@ -124,6 +124,55 @@ Two-layer Docker build:
 
 `GET /healthz` on the published port is not behind basic auth. Coolify and the image `HEALTHCHECK` both probe it. nginx forwards that path to the gateway's own `/healthz` and does not rewrite it to `/`. A live gateway returns `{"ok":true,"status":"live"}`. When the gateway port is closed, or the gateway returns 502, 503, or 504, nginx answers 503 with `{"ok":false,"status":"unavailable"}`, and `curl -f` fails. The health check's `--start-period` is 5 minutes. Failures in that window do not count, and the first success marks the container healthy immediately, so the Linuxbrew volume copy, `configure.js`, `doctor --fix`, and the first gateway boot are not marked unhealthy. After that success, later failures count toward `--retries`. If the gateway process exits, nginx keeps running so those probes can fail and Docker can report the container unhealthy.
 
+## Agent sandbox
+
+The image includes the Docker **client** only. Sandboxing stays off until you opt in. OpenClaw runs the `docker` CLI inside the gateway and asks the **host** engine to create a sibling container for tool execution. [`docker-compose.yml`](docker-compose.yml) does not mount the socket.
+
+**Mounting `/var/run/docker.sock` gives this container root on the host.** A process in the gateway can start containers, read host files, and control every other container on that engine. Turn it on only for a host where that access is acceptable. Do not mount the socket into the sandbox containers.
+
+```yaml
+    volumes:
+      - openclaw-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+```
+
+The host engine bind-mounts the workspace, so the source path has to exist on the host. Keep paths in `openclaw.json` as the gateway sees them (`/data/workspace`, `/data/.openclaw`). OpenClaw rewrites those by inspecting this container.
+
+- A host **bind mount** of the state directory is the setup OpenClaw documents. `/srv/openclaw:/data` and `/data` inside the gateway are the same files; the sandbox mount uses `/srv/openclaw/...` on the host.
+- The default **named volume** `openclaw-data:/data` has no separate host path. On `docker inspect` of this container, the image client reports that volume's mountpoint (`/var/lib/docker/volumes/<name>/_data/...`) as a bind, which is the directory the host engine can mount. This applies to a local volume whose `Source` is an absolute path. `OPENCLAW_DOCKER_VOLUME_AS_BIND=0` leaves inspect output unchanged.
+
+Build the sandbox image on the host that owns the socket (OpenClaw does not substitute a plain Debian image), then set the sandbox mode:
+
+```bash
+docker build -t openclaw-sandbox:bookworm-slim - <<'EOF'
+FROM debian:bookworm-slim
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  bash ca-certificates curl git jq python3 ripgrep \
+  && rm -rf /var/lib/apt/lists/*
+RUN useradd --create-home --shell /bin/bash sandbox
+USER sandbox
+WORKDIR /home/sandbox
+CMD ["sleep", "infinity"]
+EOF
+```
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "sandbox": {
+        "mode": "non-main",
+        "scope": "session",
+        "workspaceAccess": "none"
+      }
+    }
+  }
+}
+```
+
+`openclaw sandbox list` shows the sibling containers. Upstream reference: https://docs.openclaw.ai/gateway/sandboxing
+
 ## Files
 
 ```
@@ -132,6 +181,7 @@ Two-layer Docker build:
 Dockerfile.base                     — multi-stage: build openclaw from source → slim runtime
 Dockerfile                          — FROM base, add nginx + config scripts + entrypoint
 scripts/configure.js                — reads env vars, writes/patches openclaw.json
+scripts/docker-cli.js               — docker client wrapper; named volumes as host binds
 scripts/entrypoint.sh               — configure → doctor → generated nginx site → gateway
 scripts/preserve-hand-edits.js      — parks unrecognized top-level keys in openclaw.extra.json
 scripts/smoke.js                    — smoke test (openclaw --version)
