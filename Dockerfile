@@ -13,10 +13,31 @@ RUN apt-get update \
 # Remove default nginx site
 RUN rm -f /etc/nginx/sites-enabled/default
 
+# Docker client only. Agent sandboxing shells out to `docker` and creates
+# sibling containers on the host engine through a mounted socket. The static
+# tarball also contains the engine; extract the client and leave the engine
+# on the host. scripts/docker-cli.js is the PATH entry so a named volume on
+# /data can be reported as a host bind. See README "Agent sandbox".
+ARG DOCKER_CLI_VERSION=29.9.1
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) docker_arch="x86_64" ;; \
+      arm64) docker_arch="aarch64" ;; \
+      *) echo "unsupported architecture for docker CLI: ${arch}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://download.docker.com/linux/static/stable/${docker_arch}/docker-${DOCKER_CLI_VERSION}.tgz" \
+      | tar -xz -C /tmp docker/docker; \
+    install -d /usr/local/libexec; \
+    install -m 0755 /tmp/docker/docker /usr/local/libexec/openclaw-docker; \
+    rm -rf /tmp/docker
+
 COPY scripts/ /app/scripts/
 # Re-install the CLI wrapper from this repo so an older base image still refuses
 # `openclaw update`. Wrap npm so `npm i -g openclaw` stops before EEXIST.
-RUN chmod +x /app/scripts/*.sh \
+# `docker` on PATH is the sandbox client wrapper, not the engine.
+RUN chmod +x /app/scripts/*.sh /app/scripts/docker-cli.js \
+  && ln -sf /app/scripts/docker-cli.js /usr/local/bin/docker \
   && mkdir -p /usr/local/lib/openclaw \
   && cp /app/scripts/image-update-guard.sh /usr/local/lib/openclaw/image-update-guard.sh \
   && cp /app/scripts/openclaw-bin.sh /usr/local/bin/openclaw \

@@ -38,6 +38,10 @@ services:
       # (/data/.openclaw/agents/<agentId>/agent/openclaw-agent.sqlite).
       # `docker compose down` keeps this volume. `down -v` deletes it.
       - openclaw-data:/data
+      # Optional agent sandbox. Leave this commented unless you opt in.
+      # Mounting the socket gives this container root on the host.
+      # See README "Agent sandbox".
+      # - /var/run/docker.sock:/var/run/docker.sock
       # Optional: custom JSON config for complex settings (groups, plugins, etc.)
       # - ./my-openclaw.json:/app/config/openclaw.json
     depends_on:
