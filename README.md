@@ -156,6 +156,14 @@ Jobs:
 
 Triggers: `schedule: '0 * * * *'` (hourly) + `workflow_dispatch` (version, force_rebuild, skip_latest_tag).
 
+## Updating on Coolify
+
+Update by pulling a newer image tag and redeploying. `npm install -g openclaw` and `openclaw update` inside the container exit with that instruction. The image builds OpenClaw from the upstream tag, the gateway process is PID 1, and a global npm install lands on `/data/npm-global`, which stays on the volume and would hide the binary from later image tags.
+
+`auto-update.yml` publishes `coollabsio/openclaw:<version>` and `:latest` after each upstream release (the check runs hourly). Pin `coollabsio/openclaw:<version>` in the Coolify service (CalVer, for example `2026.10.5`). When a new tag appears, read the upstream release notes, change the tag, and redeploy. Coolify recreates the container. `/data` keeps config, credentials, workspace, and chat history. Startup runs `openclaw doctor --fix` before the gateway listens. Live WebSocket sessions disconnect during the recreate; device pairings and history on `/data` are there when the new container is up. Leave the volume in place (`docker compose down -v` deletes it).
+
+A service that tracks `:latest` and redeploys on every publish follows breaking releases as well. Pin a version tag when you want to read the notes first.
+
 ## Secrets needed (repo settings)
 
 - `DOCKERHUB_USERNAME` — Docker Hub username
