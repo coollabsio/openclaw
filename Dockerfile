@@ -33,8 +33,20 @@ RUN set -eux; \
     rm -rf /tmp/docker
 
 COPY scripts/ /app/scripts/
+# Re-install the CLI wrapper from this repo so an older base image still refuses
+# `openclaw update`. Wrap npm so `npm i -g openclaw` stops before EEXIST.
+# `docker` on PATH is the sandbox client wrapper, not the engine.
 RUN chmod +x /app/scripts/*.sh /app/scripts/docker-cli.js \
-  && ln -sf /app/scripts/docker-cli.js /usr/local/bin/docker
+  && ln -sf /app/scripts/docker-cli.js /usr/local/bin/docker \
+  && mkdir -p /usr/local/lib/openclaw \
+  && cp /app/scripts/image-update-guard.sh /usr/local/lib/openclaw/image-update-guard.sh \
+  && cp /app/scripts/openclaw-bin.sh /usr/local/bin/openclaw \
+  && rm -f /usr/local/bin/npm \
+  && cp /app/scripts/npm-guard.sh /usr/local/bin/npm \
+  && chmod 755 /usr/local/bin/openclaw /usr/local/bin/npm /usr/local/lib/openclaw/image-update-guard.sh \
+  && test ! -L /usr/local/bin/npm \
+  && test -f /usr/local/lib/node_modules/npm/bin/npm-cli.js \
+  && head -1 /usr/local/lib/node_modules/npm/bin/npm-cli.js | grep -q node
 
 ENV NPM_CONFIG_PREFIX="/data/npm-global" \
     UV_TOOL_DIR="/data/uv/tools" \

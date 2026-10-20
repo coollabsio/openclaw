@@ -4,23 +4,30 @@
 
 ### Minimal (`docker run`)
 
+A single container does not need the browser sidecar. nginx starts either way. `/browser/` returns 502 until that sidecar is on the same Docker network. An older image failed this command with `host not found in upstream "browser"` because nginx resolved that name at startup ([#78](https://github.com/coollabsio/openclaw/issues/78)). The current entrypoint proxies `/browser/` through a variable and Docker's DNS, so a missing sidecar does not stop nginx.
+
 ```bash
 docker run -d \
   --name openclaw \
+  --restart unless-stopped \
   -p 8080:8080 \
   -e ANTHROPIC_API_KEY=sk-ant-... \
+  -e AUTH_USERNAME=admin \
   -e AUTH_PASSWORD=changeme \
-  -e OPENCLAW_GATEWAY_TOKEN=my-secret-token \
-  -e OPENCLAW_ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000 \
+  -e OPENCLAW_GATEWAY_TOKEN="$(openssl rand -hex 32)" \
+  -e OPENCLAW_ALLOWED_ORIGINS=http://localhost:8080,http://127.0.0.1:8080 \
   -v openclaw-data:/data \
   coollabsio/openclaw:latest
 ```
 
-- `ANTHROPIC_API_KEY` — any [supported provider key](#ai-providers-at-least-one-required) works (OpenAI, Gemini, etc.)
-- `AUTH_PASSWORD` — protects the web UI with HTTP basic auth (user defaults to `admin`, override with `AUTH_USERNAME`)
-- `OPENCLAW_GATEWAY_TOKEN` — internal API token; auto-generated if omitted, but set it explicitly for stable API access
-- `OPENCLAW_ALLOWED_ORIGINS` — **(Required)** Set to `http://localhost:5173` or your frontend origin to enable CORS for the Control UI
-- `/data` — required volume. Persists config, credentials, workspace, and chat history across container recreates (`docker compose down` keeps the named volume; `docker compose down -v` deletes it). OpenClaw 2026.10.5 stores sessions in `/data/.openclaw/agents/<agentId>/agent/openclaw-agent.sqlite`. The image sets `HOME` and `OPENCLAW_HOME` to `/data` so `~/.openclaw` is that directory. `/root/.openclaw` is outside the volume.
+Open `http://localhost:8080` and sign in as `admin` / `changeme` (or whatever you set). `GET /healthz` is not behind basic auth and returns `{"ok":true,"status":"live"}` once the gateway is up. The first boot copies Linuxbrew onto the volume, so that can take a few minutes. The container's `HEALTHCHECK` start period is 5 minutes.
+
+- `ANTHROPIC_API_KEY` — any non-empty [supported provider key](#ai-providers-at-least-one-required) works (OpenAI, Gemini, and the rest). The entrypoint exits if none is set. The value is not checked against the provider until a model call.
+- `AUTH_PASSWORD` — HTTP basic auth for the web UI and the WebSocket. `AUTH_USERNAME` defaults to `admin` when omitted. `/healthz` stays open.
+- `OPENCLAW_GATEWAY_TOKEN` — required. The container exits if it is missing or empty. It is written to `gateway.auth.token`. The command above generates one. Save that value. The Mac app and the Control UI both need it. A placeholder such as `my-secret-token` also starts the container.
+- `OPENCLAW_ALLOWED_ORIGINS` — browser origins allowed to open the Control UI WebSocket. Coolify adds the application origin on its own, so a Coolify deploy can leave this unset. A plain `docker run` has no Coolify URL. nginx forwards `X-Forwarded-*`, and OpenClaw 2026.10.5 then does not treat `http://localhost:8080` as an implicit same-origin client. Set the origin you actually open. `http://localhost:5173` and `http://localhost:3000` are other dev servers. They do not allow the UI on port 8080, and the page will load while the gateway rejects the socket with `origin not allowed`.
+- `-p 8080:8080` — nginx. The gateway listens on `127.0.0.1:18789` inside the container and is not published. Do not map 18789 unless you mean to skip nginx. See [Connect the Mac app](docs/mac-app.md).
+- `/data` — required volume. Persists config, credentials, paired devices, workspace, and chat history across container recreates (`docker compose down` keeps the named volume; `docker compose down -v` deletes it). OpenClaw 2026.10.5 stores sessions in `/data/.openclaw/agents/<agentId>/agent/openclaw-agent.sqlite` and paired devices in `/data/.openclaw/state/openclaw.sqlite`. The image sets `HOME` and `OPENCLAW_HOME` to `/data` so `~/.openclaw` is that directory. `/root/.openclaw` is outside the volume. Backups: [Back up and restore `/data`](docs/backup-restore.md).
 
 ### Full Setup (docker-compose)
 
@@ -42,7 +49,7 @@ Each browser profile has to be approved once before the Control UI will connect.
 1. Sign in with HTTP basic auth (`AUTH_USERNAME` / `AUTH_PASSWORD`).
 2. Enter the gateway WebSocket URL and `OPENCLAW_GATEWAY_TOKEN`, then choose **Connect**. On Coolify the URL is the application's `wss://` address (same host as the Control UI, `wss` when the site is served over HTTPS).
 3. The page shows **Approve this browser** and a request id.
-4. In the container terminal, list pending requests and approve that id. A Coolify terminal and `docker exec` already have `OPENCLAW_GATEWAY_TOKEN`. Leave `OPENCLAW_GATEWAY_URL` unset and do not pass `--url`. The CLI then uses the loopback gateway at `ws://127.0.0.1:18789` (the process nginx proxies to). `HOME` can stay `/root`; the token in the environment is enough. `HOME=/data` also works, because that reads `/data/.openclaw/openclaw.json`.
+4. In the container terminal, list pending requests and approve that id. A Coolify terminal and `docker exec` already have `OPENCLAW_GATEWAY_TOKEN`. The image sets `HOME` and `OPENCLAW_HOME` to `/data`. Leave `OPENCLAW_GATEWAY_URL` unset and do not pass `--url`. The CLI then uses the loopback gateway at `ws://127.0.0.1:18789` (the process nginx proxies to) and reads config from `/data/.openclaw/openclaw.json`.
 
    ```bash
    openclaw devices list
@@ -63,7 +70,7 @@ gateway connect failed: GatewayClientRequestError: scope upgrade pending approva
 
 That CLI was connecting as its own device and requesting operator scopes that device did not have yet, so the same command could not approve the browser or itself.
 
-OpenClaw 2026.10.5 does not do that on the loopback gateway when `OPENCLAW_GATEWAY_TOKEN` is set. The commands above approve the browser request. Verified on an image built from this repo against OpenClaw 2026.10.5: basic auth, gateway token, **Approve this browser**, then `openclaw devices list` and `openclaw devices approve <requestId>` from `docker exec` (default `HOME=/root`, no `--url`). The Control UI then reaches Home. No `scope upgrade pending approval`, and no `401` with `WWW-Authenticate: Basic` after the page loaded.
+OpenClaw 2026.10.5 does not do that on the loopback gateway when `OPENCLAW_GATEWAY_TOKEN` is set. The commands above approve the browser request. On the current image, `docker exec` has `HOME=/data` and `OPENCLAW_HOME=/data`. Leave `OPENCLAW_GATEWAY_URL` unset and do not pass `--url`. The Control UI then reaches Home. No `scope upgrade pending approval`, and no `401` with `WWW-Authenticate: Basic` after the page loaded.
 
 If approval still fails, match the message:
 
@@ -71,8 +78,16 @@ If approval still fails, match the message:
 |---|---|
 | `openclaw devices approve` with no id prints the pending request and exits 1 | Rerun with the request id from that preview or from the browser. |
 | `gateway rejected websocket upgrade (HTTP 401)` | The CLI is aimed at nginx (`:8080` or the public Coolify `wss://` URL). Basic auth rejects it before the gateway. Unset `OPENCLAW_GATEWAY_URL`, drop `--url`, and rerun so the target stays `ws://127.0.0.1:18789`. `gateway.trustedProxies` is for browser traffic through nginx; it does not apply to this direct loopback connection. |
-| `gateway device.pair.list requires credentials` or `gateway url override requires explicit credentials` | Pass the container's `OPENCLAW_GATEWAY_TOKEN` with `--token` when you also pass `--url`. With no `--url`, the env token is used. If the token env var is missing, `HOME=/data` lets the CLI read the token from `/data/.openclaw/openclaw.json`. |
+| `gateway device.pair.list requires credentials` or `gateway url override requires explicit credentials` | Pass the container's `OPENCLAW_GATEWAY_TOKEN` with `--token` when you also pass `--url`. With no `--url`, the env token is used. `HOME` and `OPENCLAW_HOME` are `/data`, so a shell that dropped the token still reads `gateway.auth.token` from `/data/.openclaw/openclaw.json`. |
 | `This device can't approve its own scope upgrade` or `scope upgrade pending approval` | The CLI authenticated as a paired device and asked for scopes that device does not have. Approve the **browser** request id from `openclaw devices list` on the loopback gateway with `OPENCLAW_GATEWAY_TOKEN` set and no `--url`. The CLI cannot approve its own pending scope upgrade. |
+
+### Mac app
+
+The Mac app uses the same approval commands, with a different URL. On OpenClaw v2026.10.5 the gateway address is `wss://<your domain>` (Coolify) or `ws://<host>:8080` (`docker run`), and `OPENCLAW_GATEWAY_TOKEN` goes in the token field, not in the URL. `gateway.mode` on the Mac is `remote`. Do not write that `gateway.remote` block into the container config, and do not put `AUTH_USERNAME`:`AUTH_PASSWORD` in the WebSocket URL. The app rejects URL userinfo. When `AUTH_PASSWORD` is set, nginx still requires basic auth on the WebSocket, which that direct URL cannot send. Details, including the SSH alternative: [Connect the Mac app](docs/mac-app.md).
+
+### Back up and restore `/data`
+
+Stop the container and archive the volume, or use `openclaw backup create` for a SQLite-safe snapshot while the gateway stays up. Paired devices live in `/data/.openclaw/state/openclaw.sqlite`, not in a JSON file you can copy by itself. Coolify 4.3.0+ can schedule that volume backup. Use **Stop containers during archive**. There is no dashboard restore. Steps: [Back up and restore `/data`](docs/backup-restore.md).
 
 ## Architecture
 
@@ -97,9 +112,9 @@ If approval still fails, match the message:
 │  entrypoint.sh                              │
 │    1. run custom init script (optional)     │
 │    2. configure.js (env vars → json)        │
-│    3. openclaw doctor --fix (every start)   │
+│    3. doctor --fix, then park extra keys    │
 │    4. nginx (background)                    │
-│    5. exec openclaw gateway                 │
+│    5. gateway run (entrypoint stays up)     │
 └─────────────────────────────────────────────┘
 ```
 
@@ -107,7 +122,7 @@ Two-layer Docker build:
 1. **Base image** (`Dockerfile.base`) — builds openclaw from source. Tagged `coollabsio/openclaw-base:<version>`.
 2. **Final image** (`Dockerfile`) — FROM base, adds nginx + env-to-config scripts. Tagged `coollabsio/openclaw:<version>`.
 
-`GET /healthz` on the published port is not behind basic auth. Coolify and the image `HEALTHCHECK` both probe it. nginx forwards that path to the gateway's own `/healthz` and does not rewrite it to `/`. A live gateway returns `{"ok":true,"status":"live"}`. When the gateway port is closed, nginx returns 503, and `curl -f` fails. The health check's `--start-period` is 5 minutes. Failures in that window do not count, and the first success marks the container healthy immediately, so the Linuxbrew volume copy, `configure.js`, `doctor --fix`, and the first gateway boot are not marked unhealthy. After that success, later failures count toward `--retries`. If the gateway process exits, nginx keeps running so those probes can fail and Docker can report the container unhealthy.
+`GET /healthz` on the published port is not behind basic auth. Coolify and the image `HEALTHCHECK` both probe it. nginx forwards that path to the gateway's own `/healthz` and does not rewrite it to `/`. A live gateway returns `{"ok":true,"status":"live"}`. When the gateway port is closed, or the gateway returns 502, 503, or 504, nginx answers 503 with `{"ok":false,"status":"unavailable"}`, and `curl -f` fails. The health check's `--start-period` is 5 minutes. Failures in that window do not count, and the first success marks the container healthy immediately, so the Linuxbrew volume copy, `configure.js`, `doctor --fix`, and the first gateway boot are not marked unhealthy. After that success, later failures count toward `--retries`. If the gateway process exits, nginx keeps running so those probes can fail and Docker can report the container unhealthy.
 
 ## Agent sandbox
 
@@ -167,10 +182,13 @@ Dockerfile.base                     — multi-stage: build openclaw from source 
 Dockerfile                          — FROM base, add nginx + config scripts + entrypoint
 scripts/configure.js                — reads env vars, writes/patches openclaw.json
 scripts/docker-cli.js               — docker client wrapper; named volumes as host binds
-scripts/entrypoint.sh               — container entrypoint: configure → doctor → nginx → gateway
+scripts/entrypoint.sh               — configure → doctor → generated nginx site → gateway
 scripts/preserve-hand-edits.js      — parks unrecognized top-level keys in openclaw.extra.json
 scripts/smoke.js                    — smoke test (openclaw --version)
-nginx/default.conf                  — reverse proxy :8080 → :18789, optional basic auth
+Dockerfile.browser                  — browser sidecar image (FROM lscr.io/linuxserver/chromium)
+browser/cdp-proxy.conf              — sidecar CDP proxy 0.0.0.0:9223 → 127.0.0.1:9222
+docs/backup-restore.md              — back up and restore /data, including Coolify volume backups
+docs/mac-app.md                     — connect the OpenClaw Mac app to this gateway
 .dockerignore                       — standard ignores
 .env.example                        — env var reference
 ```
@@ -188,6 +206,14 @@ Jobs:
 
 Triggers: `schedule: '0 * * * *'` (hourly) + `workflow_dispatch` (version, force_rebuild, skip_latest_tag).
 
+## Updating on Coolify
+
+Update by pulling a newer image tag and redeploying. `npm install -g openclaw` and `openclaw update` inside the container exit with that instruction. The image builds OpenClaw from the upstream tag, the gateway process is PID 1, and a global npm install lands on `/data/npm-global`, which stays on the volume and would hide the binary from later image tags.
+
+`auto-update.yml` publishes `coollabsio/openclaw:<version>` and `:latest` after each upstream release (the check runs hourly). Pin `coollabsio/openclaw:<version>` in the Coolify service (CalVer, for example `2026.10.5`). When a new tag appears, read the upstream release notes, change the tag, and redeploy. Coolify recreates the container. `/data` keeps config, credentials, workspace, and chat history. Startup runs `openclaw doctor --fix` before the gateway listens. Live WebSocket sessions disconnect during the recreate; device pairings and history on `/data` are there when the new container is up. Leave the volume in place (`docker compose down -v` deletes it).
+
+A service that tracks `:latest` and redeploys on every publish follows breaking releases as well. Pin a version tag when you want to read the notes first.
+
 ## Secrets needed (repo settings)
 
 - `DOCKERHUB_USERNAME` — Docker Hub username
@@ -200,10 +226,10 @@ Triggers: `schedule: '0 * * * *'` (hourly) + `workflow_dispatch` (version, force
 
 | Variable | Description |
 |---|---|
-| `ANTHROPIC_API_KEY` | Anthropic API key. Configures Claude models (Opus 4.5, Sonnet 4.5, Haiku 4.5). Set as primary when present. |
-| `OPENAI_API_KEY` | OpenAI API key. Configures GPT models (5.2, 5, 4.5-preview). Primary if no Anthropic key. |
-| `OPENROUTER_API_KEY` | OpenRouter API key. Primary if no Anthropic/OpenAI key. |
-| `GEMINI_API_KEY` | Google Gemini API key. Primary if no other provider key set. |
+| `ANTHROPIC_API_KEY` | Anthropic API key. Built-in provider. When no primary is saved, selects `anthropic/claude-opus-4-5-20251101`. |
+| `OPENAI_API_KEY` | OpenAI API key. Built-in provider. When no primary is saved and no Anthropic key is set, selects `openai/gpt-5.2`. |
+| `OPENROUTER_API_KEY` | OpenRouter API key. When no primary is saved, selected after Anthropic and OpenAI (`openrouter/anthropic/claude-opus-4-5`). |
+| `GEMINI_API_KEY` | Google Gemini API key. When no primary is saved, selected after Anthropic, OpenAI, and OpenRouter (`google/gemini-3-pro`). |
 | `XAI_API_KEY` | xAI API key. Configures Grok models. |
 | `GROQ_API_KEY` | Groq API key. Configures Llama models on Groq hardware. |
 | `MISTRAL_API_KEY` | Mistral API key. Configures Mistral Large and other models. |
@@ -221,7 +247,7 @@ Triggers: `schedule: '0 * * * *'` (hourly) + `workflow_dispatch` (version, force
 
 Multiple providers can be set simultaneously. Priority for primary model: Anthropic > OpenAI > OpenRouter > Gemini > OpenCode > GitHub Copilot > xAI > Groq > Mistral > Cerebras > Venice > Moonshot > Kimi > MiniMax > Synthetic > ZAI > AI Gateway > Xiaomi > Bedrock > Ollama > OpenAI-Compatible.
 
-If a provider env var is removed, that provider section is cleaned from `openclaw.json` on next start.
+Custom provider blocks (Venice, MiniMax, Moonshot, Kimi, Synthetic, Xiaomi, Bedrock, Ollama, OpenAI-compatible) are removed from `openclaw.json` on the next start when their env var is unset and no custom JSON file is mounted. Built-in providers are detected from the env var only; `configure.js` does not write a `models.providers` entry for them. A mounted custom JSON file is not stripped.
 
 ### Deepgram (audio transcription, optional)
 
@@ -235,8 +261,9 @@ If a provider env var is removed, that provider section is cleaned from `opencla
 |---|---|---|
 | `AWS_ACCESS_KEY_ID` | | AWS access key. Both `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` required. |
 | `AWS_SECRET_ACCESS_KEY` | | AWS secret key. |
-| `AWS_REGION` | `us-east-1` | AWS region for Bedrock runtime endpoint. |
-| `AWS_SESSION_TOKEN` | | Optional session token for temporary credentials. |
+| `AWS_REGION` | `us-east-1` | AWS region for the Bedrock runtime endpoint. Falls back to `AWS_DEFAULT_REGION`, then `us-east-1`. |
+| `AWS_DEFAULT_REGION` | | Used only when `AWS_REGION` is unset. |
+| `AWS_SESSION_TOKEN` | | Optional session token for temporary credentials. Not written into `openclaw.json`; the AWS SDK reads it from the process environment. |
 | `BEDROCK_PROVIDER_FILTER` | `["anthropic"]` | Filter Bedrock model discovery by provider (JSON array or comma-separated string). |
 
 ### Ollama (local models, no API key needed)
@@ -280,18 +307,18 @@ When `AUTH_PASSWORD` is set, the Control UI's own `Authorization: Bearer` fetche
 
 | Variable | Default | Description |
 |---|---|---|
-| `OPENCLAW_GATEWAY_TOKEN` | *(auto-generated)* | Bearer token for gateway auth. Auto-generated and persisted to `<STATE_DIR>/gateway.token` if not set. |
+| `OPENCLAW_GATEWAY_TOKEN` | *(required)* | Bearer token for gateway auth. The container exits if this is unset. Generate one with `openssl rand -hex 32`. Written to `gateway.auth.token` in `openclaw.json`. |
 | `OPENCLAW_GATEWAY_PORT` | `18789` | Internal port the gateway binds to. |
-| `OPENCLAW_GATEWAY_BIND` | `loopback` | Gateway bind mode. `loopback` = 127.0.0.1 only (nginx proxies LAN traffic). `lan` = 0.0.0.0 (direct access, bypasses nginx auth). Also: `tailnet`, `auto`, `custom`. |
-
-`configure.js` sets `gateway.trustedProxies` to `127.0.0.1` and `::1` when the key is not already in the config. nginx overwrites `X-Forwarded-For` with the connecting client when basic auth is on, so OpenClaw's auth rate limit sees that client instead of treating everyone as loopback (which is exempt from lockout). This does not enable trusted-proxy authentication; `gateway.auth.mode` stays `token`. Set your own `gateway.trustedProxies` in custom JSON to override. With Docker port publishing, that client is often the bridge address shared by every visitor, and current OpenClaw builds may ask for a one-time device pairing for a non-loopback address.
-| `HOME` / `OPENCLAW_HOME` | `/data` | Makes `~/.openclaw` the state directory on the volume. The node image default `HOME=/root` stores chat history outside `/data`, and that copy disappears when the container is recreated. |
+| `OPENCLAW_GATEWAY_BIND` | `loopback` | Used only when `gateway.bind` is not already set. `loopback` = 127.0.0.1 only (nginx proxies LAN traffic). `lan` = 0.0.0.0. Direct access on 18789 bypasses nginx auth and requires publishing that port. Also: `tailnet`, `auto`, `custom`. A persisted bind is kept. |
+| `HOME` / `OPENCLAW_HOME` | `/data` | Pinned in the image and again by the entrypoint, including for `docker exec` and Coolify terminals. `OPENCLAW_HOME` is the parent of `OPENCLAW_STATE_DIR` and is consulted before `HOME`, so `~/.openclaw` stays on the volume. The Node image default `/root` is outside `/data`. |
 | `OPENCLAW_STATE_DIR` | `/data/.openclaw` | Persistent state directory, including chat history at `agents/<agentId>/agent/openclaw-agent.sqlite`. Included in the `/data` volume. Do not mount a second volume on this path. |
 | `OPENCLAW_WORKSPACE_DIR` | `/data/workspace` | Workspace directory for openclaw projects. Included in the `/data` volume. |
 | `OPENCLAW_CONFIG_PATH` | `<STATE_DIR>/openclaw.json` | Override path to the config file. |
 | `OPENCLAW_CUSTOM_CONFIG` | `/app/config/openclaw.json` | Path to a user-provided custom JSON config. Env vars override on top. |
 
-`openclaw doctor --fix` runs on every start to migrate config. It does not delete the agent SQLite database. A session database found under the account home (`/root/.openclaw`) and missing from the volume is copied onto the volume once, then that ephemeral directory is renamed aside. An existing volume file is left in place.
+`configure.js` sets `gateway.trustedProxies` to `127.0.0.1` and `::1` when that value is not already an array. nginx overwrites `X-Forwarded-For` with the connecting client when basic auth is on, so OpenClaw's auth rate limit sees that client instead of treating everyone as loopback (which is exempt from lockout). This does not enable trusted-proxy authentication; `gateway.auth.mode` stays `token`. Set your own `gateway.trustedProxies` in custom JSON to override. With Docker port publishing, that client is often the bridge address shared by every visitor, and current OpenClaw builds may ask for a one-time device pairing for a non-loopback address.
+
+`openclaw doctor --fix` runs on every start to migrate config. It does not delete the agent SQLite database. A leftover store under the account home (`/root/.openclaw`, outside the volume) is copied once when the volume does not already have that file: each agent's `openclaw-agent.sqlite` and its sidecars, session files under `agents/<id>/sessions`, and `state/openclaw.sqlite`. The ephemeral directory is then renamed aside. An existing volume file is left in place.
 
 The Coolify service template (`templates/compose/openclaw.yaml` in the Coolify repo) mounts `openclaw-data:/data` and sets `OPENCLAW_STATE_DIR=/data/.openclaw`, the same path as [`docker-compose.yml`](docker-compose.yml).
 
@@ -343,7 +370,28 @@ When hooks are enabled and `AUTH_PASSWORD` is set, the hooks path automatically 
 | `BROWSER_DEFAULT_PROFILE` | | Override the default browser profile name. |
 | `BROWSER_SSRF_ALLOW_COMPOSE_SIDECAR` | | Set to `false` or `0` to skip the automatic `browser` hostname allowance. Any other value, including unset, leaves that allowance on when the CDP hostname is exactly `browser`. |
 
-[`docker-compose.yml`](docker-compose.yml) runs `coollabsio/openclaw-browser` on the same compose network. Docs: https://docs.openclaw.ai/tools/browser
+[`docker-compose.yml`](docker-compose.yml) runs `coollabsio/openclaw-browser` on the same compose network. That image is built from [`Dockerfile.browser`](Dockerfile.browser), which starts `FROM lscr.io/linuxserver/chromium:latest`. Compose does not pull the linuxserver image directly. Docs: https://docs.openclaw.ai/tools/browser
+
+#### Why linuxserver/chromium, and how to use a lighter browser
+
+[Issue #30](https://github.com/coollabsio/openclaw/issues/30) asks why the sidecar is `lscr.io/linuxserver/chromium`. It is a remote desktop (Selkies), not a headless Chromium binary. The desktop is what `/browser/` shows, so you can pass an OAuth prompt, a captcha, or 2FA and have the agent reuse that profile over CDP. The linuxserver image serves that desktop on container port 3000, which this image's nginx proxies at `/browser/` behind basic auth. Chromium still binds DevTools to `127.0.0.1:9222`. [`browser/cdp-proxy.conf`](browser/cdp-proxy.conf) is added to Selkies' existing nginx so the compose network can use `http://browser:9223`. `kasmweb/chrome` was the previous sidecar. Its desktop is on port 6901 and its CDP flags are not the ones this proxy expects, so it was replaced rather than used as the lighter option. The extra apps inside the desktop image are unused. The desktop is the part the login flow needs.
+
+A headless Chromium does not need that image. Leave the `browser` service out (a plain `docker run` already does) and set `BROWSER_CDP_URL` to a CDP endpoint the gateway can reach. `configure.js` writes it to `browser.cdpUrl`. OpenClaw 2026.10.5 then attaches and does not launch a browser inside the gateway container (`docs/tools/browser/remote.md`). `headless` only applies to a local browser OpenClaw itself starts. It does not change a remote CDP endpoint.
+
+Accepted `BROWSER_CDP_URL` shapes, from those docs:
+
+- `http://host:port` or `https://host:port` — OpenClaw reads `/json/version` and uses the advertised WebSocket.
+- `ws://host:port/devtools/browser/<id>` (or `wss://`) — connect that socket directly.
+- A bare `ws://host:port` — try `/json/version` first, then the bare socket (Browserless-style hosts).
+
+The hostname `browser` is the only private name this image allowlists on its own. Another container hostname needs an explicit allowlist. A raw private IP is not allowlisted. Loopback CDP (a port published on `127.0.0.1` of the gateway container) also needs `attachOnly: true` on that profile, or OpenClaw treats the port as a browser it owns. There is no env var for `attachOnly`. Set it in the custom JSON mount or `OPENCLAW_CONFIG_JSON`.
+
+```bash
+BROWSER_CDP_URL=http://chromium:9223
+OPENCLAW__browser__ssrfPolicy__allowedHostnames[]=chromium
+```
+
+Stock Chromium ignores `--remote-debugging-address` and listens on `127.0.0.1` only, so another container cannot open that port. The lighter process still needs something listening on the compose network: Browserless, or any CDP proxy that forwards to the loopback DevTools port the way `cdp-proxy.conf` does. You do not get `/browser/`. A headless process has no screen for a captcha or an OAuth consent page. Use the desktop sidecar when a site requires that. Docs: https://docs.openclaw.ai/tools/browser/remote
 
 | What | Where |
 |---|---|
@@ -479,14 +527,14 @@ Open `http://localhost:8080/browser/`, sign in with `AUTH_USERNAME` / `AUTH_PASS
 | `WHATSAPP_MESSAGE_PREFIX` | | Inbound message prefix. |
 | `WHATSAPP_ACTIONS_REACTIONS` | `true` | Enable WhatsApp tool reactions. |
 
-If a channel env var is removed, that channel is cleaned from config on next start. WhatsApp env vars fully overwrite any existing WhatsApp config (no merge with custom JSON).
+Removing a channel env var does not delete that channel from the persisted config. WhatsApp env vars fully overwrite any existing WhatsApp config when `WHATSAPP_ENABLED` is `true` or `1` (custom JSON whatsapp keys are discarded).
 
 ### Provider overrides (optional)
 
+`configure.js` does not read `AI_GATEWAY_BASE_URL` or `ANTHROPIC_BASE_URL`, and it does not route a gateway URL by suffix. Built-in Anthropic, OpenAI, and Vercel AI Gateway endpoints stay on OpenClaw's defaults. Use the variables below, or `OPENAI_COMPATIBLE_BASE_URL`, for endpoints this image writes into `openclaw.json`.
+
 | Variable | Description |
 |---|---|
-| `AI_GATEWAY_BASE_URL` | Custom base URL for AI gateway (e.g. Cloudflare AI Gateway). Applied to the matching provider based on URL suffix. |
-| `ANTHROPIC_BASE_URL` | Override Anthropic API base URL specifically. |
 | `MOONSHOT_BASE_URL` | Override Moonshot API base URL. Default: `https://api.moonshot.ai/v1`. |
 | `KIMI_BASE_URL` | Override Kimi Coding API base URL. Default: `https://api.moonshot.ai/anthropic`. |
 | `MINIMAX_BASE_URL` | Override the MiniMax Anthropic-compatible chat base URL. Default: `https://api.minimax.io/anthropic` (global). China: `https://api.minimaxi.com/anthropic`. |
@@ -510,7 +558,7 @@ The base image includes common skill dependencies baked in:
 - **uv** — fast Python package manager for Python-based skills
 - **build-essential**, **git**, **curl** — common build dependencies
 
-Note: packages installed at runtime (e.g. via `brew install`) are part of the container filesystem and do **not** persist across container rebuilds. To permanently add packages, customize `Dockerfile.base` or use `OPENCLAW_DOCKER_APT_PACKAGES` for apt-available equivalents.
+On first start the entrypoint copies Linuxbrew to `/data/linuxbrew` and points `/home/linuxbrew/.linuxbrew` at that directory, so `brew install` stays on the volume across container recreates. `docker compose down -v` deletes it. Packages from `OPENCLAW_DOCKER_APT_PACKAGES` are installed into the container layer on every start.
 
 ### Custom init script (optional)
 
@@ -544,8 +592,8 @@ OPENCLAW__channels__discord__customSetting=value
 
 **Auto-typing:** `true`/`false` → boolean, integers → number, floats → number, otherwise string. Use `[]` suffix for arrays (comma-separated).
 
-> **Precedence (highest wins):** `OPENCLAW_CONFIG_JSON` > `OPENCLAW__*` dot-notation > dedicated env vars (e.g. `TELEGRAM_BOT_TOKEN`) > custom JSON mount > persisted config.
-> If both a dedicated env var and a dot-notation var set the same key, the dot-notation value wins.
+> **Precedence (highest wins):** `OPENCLAW_CONFIG_JSON` > `OPENCLAW__*` dot-notation > dedicated env vars (e.g. `TELEGRAM_BOT_TOKEN`) > persisted `openclaw.json` > custom JSON mount.
+> If both a dedicated env var and a dot-notation var set the same key, the dot-notation value wins. A saved `gateway.bind` and an existing `gateway.trustedProxies` array are kept. A saved primary model is kept unless `OPENCLAW_PRIMARY_MODEL` is set.
 
 ### JSON Config via Env Var (OPENCLAW_CONFIG_JSON)
 
@@ -572,7 +620,6 @@ environment:
 |---|---|
 | `COOLIFY_URL` | Application URL(s) assigned by Coolify, scheme included. Comma-separated when several domains are configured. Preferred source for Control UI allowed origins; each entry is normalized to a browser origin. |
 | `COOLIFY_FQDN` | Application domain name(s), usually without a scheme. Used for allowed origins only when `COOLIFY_URL` is unset. Bare hosts become `https://` origins. |
-| `COOLIFY_BRANCH` | Git branch deployed. |
 
 ## Custom JSON config (Docker mount)
 
@@ -588,11 +635,13 @@ Override the mount path with `OPENCLAW_CUSTOM_CONFIG` env var if needed.
 
 1. Custom JSON (`/app/config/openclaw.json`) — base layer
 2. Persisted state (`<STATE_DIR>/openclaw.json`) — preserves runtime changes from previous runs
-3. Env vars — applied on top, always win
+3. Env vars — applied on top for the keys those variables set
 
 Arrays are replaced, not concatenated. One exception: `models.providers.ollama.models` from the custom JSON file is kept when the persisted config still has an older Ollama model list. Provider API keys are always read from env vars, never from JSON.
 
-**Note:** WhatsApp is a special case — when `WHATSAPP_ENABLED=true`, env vars fully overwrite the WhatsApp config block (custom JSON whatsapp keys are discarded). For all other channels, custom JSON keys are preserved and env vars merge on top.
+`gateway.bind` is taken from `OPENCLAW_GATEWAY_BIND` only when the merged config has no bind. `gateway.trustedProxies` is set to `127.0.0.1` and `::1` only when it is not already an array. A saved `agents.defaults.model.primary` is kept unless `OPENCLAW_PRIMARY_MODEL` is set.
+
+**Note:** WhatsApp is a special case — when `WHATSAPP_ENABLED` is `true` or `1`, env vars fully overwrite the WhatsApp config block (custom JSON whatsapp keys are discarded). For all other channels, custom JSON keys are preserved and env vars merge on top.
 
 `openclaw doctor --fix` runs on every start. OpenClaw 2026.10.5 validates `openclaw.json` with a strict schema. An unrecognized top-level key makes `gateway run` exit when it is present at process start, and it makes CLI commands such as `openclaw devices list`, `openclaw devices approve`, and `openclaw sessions` exit 1 (`Unrecognized key`). Doctor still rewrites `openclaw.json` before the gateway listens. That keeps upgrades migrating and still applies env-driven values from `configure.js` (doctor may then canonicalize a model id). Nested keys doctor changed are not put back.
 

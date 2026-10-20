@@ -21,6 +21,7 @@ jobs:
           node scripts/utils.test.js
           node scripts/nginx-bearer.test.js
           node scripts/docker-cli.test.js
+          node scripts/image-update-guard.test.js
 
   docker-build:
     runs-on: ubuntu-latest
