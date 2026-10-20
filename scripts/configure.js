@@ -25,6 +25,7 @@ const {
   ollamaPrimaryModel,
   reconcileStaleOllamaPrimary,
   resolveOpenAICompatibleProvider,
+  resolveMemoryBackend,
   resolveComposeBrowserSidecarSsrF,
 } = require('./utils');
 
@@ -150,6 +151,18 @@ if (!config.agents.defaults.workspace) {
   config.agents.defaults.workspace = WORKSPACE_DIR;
 }
 ensure(config, "agents", "defaults", "model");
+
+// Memory engine. OpenClaw v2026.10.5 retired memory.backend (and QMD).
+// plugins.slots.memory is the schema key. Unset leaves the existing slot,
+// which defaults to the builtin memory-core plugin.
+const memoryBackend = resolveMemoryBackend(process.env.OPENCLAW_MEMORY_BACKEND);
+if (memoryBackend.action === "apply") {
+  ensure(config, "plugins", "slots");
+  config.plugins.slots.memory = memoryBackend.slot;
+  console.log(`[configure] memory slot: ${memoryBackend.slot}`);
+} else if (memoryBackend.action === "rejected") {
+  console.warn(memoryBackend.warning);
+}
 
 // ── Providers ───────────────────────────────────────────────────────────────
 //
@@ -361,10 +374,12 @@ restoreCustomOllamaModels(config, customOllamaModels);
 // OpenAI-compatible endpoint (LiteLLM, vLLM, LM Studio, LocalAI, ...).
 // Base URL and model are required — never default them to OpenAI.
 // The API key is optional for local servers without auth.
+// Context window is optional and only overrides the env model's contextWindow.
 const openAICompatible = resolveOpenAICompatibleProvider({
   apiKey: process.env.OPENAI_COMPATIBLE_API_KEY,
   baseUrl: process.env.OPENAI_COMPATIBLE_BASE_URL,
   model: process.env.OPENAI_COMPATIBLE_MODEL,
+  contextWindow: process.env.OPENAI_COMPATIBLE_CONTEXT_WINDOW,
   existing: config.models?.providers?.["openai-compatible"],
 });
 if (openAICompatible.action === "apply") {
