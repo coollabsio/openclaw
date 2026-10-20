@@ -230,6 +230,7 @@ A service that tracks `:latest` and redeploys on every publish follows breaking 
 | `OPENAI_API_KEY` | OpenAI API key. Built-in provider. When no primary is saved and no Anthropic key is set, selects `openai/gpt-5.2`. |
 | `OPENROUTER_API_KEY` | OpenRouter API key. When no primary is saved, selected after Anthropic and OpenAI (`openrouter/anthropic/claude-opus-4-5`). |
 | `GEMINI_API_KEY` | Google Gemini API key. When no primary is saved, selected after Anthropic, OpenAI, and OpenRouter (`google/gemini-3-pro`). |
+| `DEEPSEEK_API_KEY` | DeepSeek API key. Uses the bundled DeepSeek plugin. When no primary is saved, selected after Anthropic, OpenAI, OpenRouter, and Gemini (`deepseek/deepseek-v4-pro`). |
 | `XAI_API_KEY` | xAI API key. Configures Grok models. |
 | `GROQ_API_KEY` | Groq API key. Configures Llama models on Groq hardware. |
 | `MISTRAL_API_KEY` | Mistral API key. Configures Mistral Large and other models. |
@@ -245,7 +246,9 @@ A service that tracks `:latest` and redeploys on every publish follows breaking 
 | `COPILOT_GITHUB_TOKEN` | GitHub Copilot token. Configures Claude models via GitHub. |
 | `XIAOMI_API_KEY` | Xiaomi MiMo API key (Anthropic-compatible). Configures MiMo v2 Flash. |
 
-Multiple providers can be set simultaneously. Priority for primary model: Anthropic > OpenAI > OpenRouter > Gemini > OpenCode > GitHub Copilot > xAI > Groq > Mistral > Cerebras > Venice > Moonshot > Kimi > MiniMax > Synthetic > ZAI > AI Gateway > Xiaomi > Bedrock > Ollama > OpenAI-Compatible.
+Multiple providers can be set simultaneously. Priority for primary model: Anthropic > OpenAI > OpenRouter > Gemini > DeepSeek > OpenCode > GitHub Copilot > xAI > Groq > Mistral > Cerebras > Venice > Moonshot > Kimi > MiniMax > Synthetic > ZAI > AI Gateway > Xiaomi > Bedrock > Ollama > OpenAI-Compatible.
+
+`DEEPSEEK_API_KEY` is enough on its own. The image already includes the upstream `@openclaw/deepseek-provider` plugin, which reads that variable. Do not put the key in `openclaw.json`. DeepSeek retired `deepseek-chat` and `deepseek-reasoner` (the old "deepseek-reasoning" choice) on 2026-07-24, so those ids do not connect. Pick another model with `OPENCLAW_PRIMARY_MODEL=deepseek/deepseek-v4-flash` (or `deepseek/deepseek-v4-pro`). To point at DeepSeek through the generic OpenAI-compatible path instead of the plugin, set `OPENAI_COMPATIBLE_BASE_URL=https://api.deepseek.com`, `OPENAI_COMPATIBLE_MODEL=deepseek-v4-pro`, and `OPENAI_COMPATIBLE_API_KEY`. That path does not get the plugin's thinking replay.
 
 Custom provider blocks (Venice, MiniMax, Moonshot, Kimi, Synthetic, Xiaomi, Bedrock, Ollama, OpenAI-compatible) are removed from `openclaw.json` on the next start when their env var is unset and no custom JSON file is mounted. Built-in providers are detected from the env var only; `configure.js` does not write a `models.providers` entry for them. A mounted custom JSON file is not stripped.
 
@@ -559,6 +562,12 @@ The base image includes common skill dependencies baked in:
 - **build-essential**, **git**, **curl** — common build dependencies
 
 On first start the entrypoint copies Linuxbrew to `/data/linuxbrew` and points `/home/linuxbrew/.linuxbrew` at that directory, so `brew install` stays on the volume across container recreates. `docker compose down -v` deletes it. Packages from `OPENCLAW_DOCKER_APT_PACKAGES` are installed into the container layer on every start.
+
+### ClawHub skills
+
+`openclaw skills install` talks to ClawHub (`https://clawhub.ai`) from this container. A `429` / `Rate limit exceeded` on `/api/v1/download` is ClawHub's limit for anonymous requests. The image does not proxy those calls or share one IP across installs.
+
+Create a token at [clawhub.ai/settings](https://clawhub.ai/settings) and set `CLAWHUB_TOKEN` ( `CLAWHUB_AUTH_TOKEN` is also read). OpenClaw sends it on skill installs. A token written by `npx clawhub login --token <token>` is stored at `$HOME/.config/clawhub/config.json`. `HOME` is `/data`, so that file stays on the volume.
 
 ### Custom init script (optional)
 

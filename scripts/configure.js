@@ -178,6 +178,7 @@ const builtinProviders = [
   ["OPENAI_API_KEY",       "OpenAI",             "openai"],
   ["OPENROUTER_API_KEY",   "OpenRouter",         "openrouter"],
   ["GEMINI_API_KEY",       "Google Gemini",      "google"],
+  ["DEEPSEEK_API_KEY",     "DeepSeek",           "deepseek"],
   ["XAI_API_KEY",          "xAI",                "xai"],
   ["GROQ_API_KEY",         "Groq",               "groq"],
   ["MISTRAL_API_KEY",      "Mistral",            "mistral"],
@@ -390,6 +391,7 @@ const primaryCandidates = [
   [process.env.OPENAI_API_KEY,         "openai/gpt-5.2"],
   [process.env.OPENROUTER_API_KEY,     "openrouter/anthropic/claude-opus-4-5"],
   [process.env.GEMINI_API_KEY,         "google/gemini-3-pro"],
+  [process.env.DEEPSEEK_API_KEY,       "deepseek/deepseek-v4-pro"],
   [opencodeKey,                        "opencode/claude-opus-4-5"],
   [process.env.COPILOT_GITHUB_TOKEN,   "github-copilot/claude-opus-4-5"],
   [process.env.XAI_API_KEY,            "xai/grok-3"],
@@ -850,7 +852,7 @@ if (!hasProvider) {
   console.error("[configure] ERROR: No AI provider API key set.");
   console.error("[configure] Providers require an env var — API keys are never read from the JSON config.");
   console.error("[configure] Set one of: ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, GEMINI_API_KEY,");
-  console.error("[configure]   XAI_API_KEY, GROQ_API_KEY, MISTRAL_API_KEY, CEREBRAS_API_KEY, ZAI_API_KEY,");
+  console.error("[configure]   DEEPSEEK_API_KEY, XAI_API_KEY, GROQ_API_KEY, MISTRAL_API_KEY, CEREBRAS_API_KEY, ZAI_API_KEY,");
   console.error("[configure]   AI_GATEWAY_API_KEY, OPENCODE_API_KEY, COPILOT_GITHUB_TOKEN, VENICE_API_KEY,");
   console.error("[configure]   MOONSHOT_API_KEY, KIMI_API_KEY, MINIMAX_API_KEY, SYNTHETIC_API_KEY, XIAOMI_API_KEY,");
   console.error("[configure]   AWS_ACCESS_KEY_ID+AWS_SECRET_ACCESS_KEY (Bedrock), OLLAMA_BASE_URL (local),");
