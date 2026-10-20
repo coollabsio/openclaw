@@ -106,8 +106,12 @@ RUN printf '%s\n' \
 # which is where we place the symlinks. This avoids polluting / with project files.
 COPY --from=openclaw-build /openclaw /opt/openclaw/app
 
-RUN printf '%s\n' '#!/usr/bin/env bash' 'exec node /opt/openclaw/app/openclaw.mjs "$@"' > /usr/local/bin/openclaw \
-  && chmod +x /usr/local/bin/openclaw
+# The CLI is a wrapper so `openclaw update` can explain that upgrades ship as
+# image tags. A plain file at this path is also what made `npm i -g openclaw`
+# fail with EEXIST; the final image wraps npm and refuses that install.
+COPY scripts/image-update-guard.sh /usr/local/lib/openclaw/image-update-guard.sh
+COPY scripts/openclaw-bin.sh /usr/local/bin/openclaw
+RUN chmod 755 /usr/local/bin/openclaw /usr/local/lib/openclaw/image-update-guard.sh
 
 # Compiled JS in dist/ resolves ../../ relative to import.meta.url.
 # Files in /opt/openclaw/app/dist/ resolve ../../ to /opt/openclaw/.

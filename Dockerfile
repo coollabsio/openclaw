@@ -14,7 +14,18 @@ RUN apt-get update \
 RUN rm -f /etc/nginx/sites-enabled/default
 
 COPY scripts/ /app/scripts/
-RUN chmod +x /app/scripts/*.sh
+# Re-install the CLI wrapper from this repo so an older base image still refuses
+# `openclaw update`. Wrap npm so `npm i -g openclaw` stops before EEXIST.
+RUN chmod +x /app/scripts/*.sh \
+  && mkdir -p /usr/local/lib/openclaw \
+  && cp /app/scripts/image-update-guard.sh /usr/local/lib/openclaw/image-update-guard.sh \
+  && cp /app/scripts/openclaw-bin.sh /usr/local/bin/openclaw \
+  && rm -f /usr/local/bin/npm \
+  && cp /app/scripts/npm-guard.sh /usr/local/bin/npm \
+  && chmod 755 /usr/local/bin/openclaw /usr/local/bin/npm /usr/local/lib/openclaw/image-update-guard.sh \
+  && test ! -L /usr/local/bin/npm \
+  && test -f /usr/local/lib/node_modules/npm/bin/npm-cli.js \
+  && head -1 /usr/local/lib/node_modules/npm/bin/npm-cli.js | grep -q node
 
 # /data/venv is created at startup and must stay ahead of Debian's python3/pip.
 # uv tool installs (Control UI skill installer) write executables to UV_TOOL_BIN_DIR,
