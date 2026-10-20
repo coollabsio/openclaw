@@ -86,7 +86,9 @@ If approval still fails, match the message:
 │    │     └── agents/<id>/agent/             │
 │    │           openclaw-agent.sqlite        │
 │    │           (chat history)               │
-│    └── workspace/      (user projects)      │
+│    ├── workspace/      (user projects)      │
+│    ├── venv/           (pip packages)       │
+│    └── uv/             (uv tool installs)   │
 │                                             │
 │  ┌──────────┐  :8080   ┌────────────────┐  │
 │  │  nginx    │ ──────→  │  openclaw      │  │
@@ -457,10 +459,13 @@ The base image includes common skill dependencies baked in:
 
 - **Linuxbrew** — `/home/linuxbrew/.linuxbrew` — skills that need `brew` work out of the box
 - **Go** — `/usr/local/go` — for Go-based skills and tools
-- **uv** — fast Python package manager for Python-based skills
+- **Python 3** — `python3`, `pip`, `pip3`, and `python3 -m venv`. Startup creates a virtualenv at `/data/venv` and puts it first on `PATH`.
+- **uv** — `uv` and `uvx`. The Control UI installs Python skills with `uv tool install`.
 - **build-essential**, **git**, **curl** — common build dependencies
 
 Note: packages installed at runtime (e.g. via `brew install`) are part of the container filesystem and do **not** persist across container rebuilds. To permanently add packages, customize `Dockerfile.base` or use `OPENCLAW_DOCKER_APT_PACKAGES` for apt-available equivalents.
+
+`pip install` goes into `/data/venv`, so those packages stay on the volume when the container is recreated and do not hit Debian's externally-managed-environment (PEP 668) error. `uv tool install` keeps tool environments under `/data/uv` (`UV_TOOL_DIR`, `UV_TOOL_BIN_DIR`, `UV_CACHE_DIR`, `UV_PYTHON_INSTALL_DIR`).
 
 ### Custom init script (optional)
 

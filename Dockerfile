@@ -16,11 +16,18 @@ RUN rm -f /etc/nginx/sites-enabled/default
 COPY scripts/ /app/scripts/
 RUN chmod +x /app/scripts/*.sh
 
+# /data/venv is created at startup and must stay ahead of Debian's python3/pip.
+# uv tool installs (Control UI skill installer) write executables to UV_TOOL_BIN_DIR,
+# not UV_TOOL_DIR. The default bin dir is ~/.local/bin, which is not on PATH.
+# Keep the bin dir beside the tool dir: uv treats every child of UV_TOOL_DIR as a tool.
 ENV NPM_CONFIG_PREFIX="/data/npm-global" \
     UV_TOOL_DIR="/data/uv/tools" \
+    UV_TOOL_BIN_DIR="/data/uv/bin" \
     UV_CACHE_DIR="/data/uv/cache" \
+    UV_PYTHON_INSTALL_DIR="/data/uv/python" \
+    VIRTUAL_ENV="/data/venv" \
     GOPATH="/data/go" \
-    PATH="/data/npm-global/bin:/data/uv/tools/bin:/data/go/bin:${PATH}"
+    PATH="/data/venv/bin:/data/npm-global/bin:/data/uv/bin:/data/go/bin:${PATH}"
 
 # The node image sets HOME=/root. OpenClaw stores chat history under
 # ~/.openclaw unless these are set for every process, including `docker exec`

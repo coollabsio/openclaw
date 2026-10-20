@@ -77,9 +77,24 @@ ENV HOMEBREW_PREFIX="/home/linuxbrew/.linuxbrew" \
 RUN curl -fsSL https://go.dev/dl/go1.24.1.linux-$(dpkg --print-architecture).tar.gz | tar -C /usr/local -xz
 ENV PATH="/usr/local/go/bin:${PATH}"
 
-# Install uv (fast Python package manager, used by Python-based skills)
+# Install uv (fast Python package manager, used by Python-based skills).
+# Upstream skill installs run `uv tool install <package>` and MCP configs call `uvx`.
 RUN curl -fsSL https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:${PATH}"
+# Some installer builds ship only the `uv` binary. `uvx` is that binary's tool-runner name.
+RUN if [ ! -e /root/.local/bin/uvx ]; then ln -s uv /root/.local/bin/uvx; fi
+
+# The Node base image includes python3, but not pip or ensurepip, and Debian marks
+# that interpreter externally managed (PEP 668). Skill docs and the Control UI
+# need `python3`, `pip`/`pip3`, and `python3 -m venv`. entrypoint.sh creates
+# /data/venv from this interpreter so installs persist off the system site-packages.
+RUN apt-get update \
+  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    python3-venv \
+    python-is-python3 \
+  && rm -rf /var/lib/apt/lists/*
 
 # Ensure tool paths survive login-shell PATH reset (/etc/profile overwrites PATH)
 RUN printf '%s\n' \
