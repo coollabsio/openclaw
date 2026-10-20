@@ -13,10 +13,31 @@ RUN apt-get update \
 # Remove default nginx site
 RUN rm -f /etc/nginx/sites-enabled/default
 
+# Docker client only. Agent sandboxing shells out to `docker` and creates
+# sibling containers on the host engine through a mounted socket. The static
+# tarball also contains the engine; extract the client and leave the engine
+# on the host. scripts/docker-cli.js is the PATH entry so a named volume on
+# /data can be reported as a host bind. See README "Agent sandbox".
+ARG DOCKER_CLI_VERSION=29.9.1
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) docker_arch="x86_64" ;; \
+      arm64) docker_arch="aarch64" ;; \
+      *) echo "unsupported architecture for docker CLI: ${arch}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://download.docker.com/linux/static/stable/${docker_arch}/docker-${DOCKER_CLI_VERSION}.tgz" \
+      | tar -xz -C /tmp docker/docker; \
+    install -d /usr/local/libexec; \
+    install -m 0755 /tmp/docker/docker /usr/local/libexec/openclaw-docker; \
+    rm -rf /tmp/docker
+
 COPY scripts/ /app/scripts/
 # Re-install the CLI wrapper from this repo so an older base image still refuses
 # `openclaw update`. Wrap npm so `npm i -g openclaw` stops before EEXIST.
-RUN chmod +x /app/scripts/*.sh \
+# `docker` on PATH is the sandbox client wrapper, not the engine.
+RUN chmod +x /app/scripts/*.sh /app/scripts/docker-cli.js \
+  && ln -sf /app/scripts/docker-cli.js /usr/local/bin/docker \
   && mkdir -p /usr/local/lib/openclaw \
   && cp /app/scripts/image-update-guard.sh /usr/local/lib/openclaw/image-update-guard.sh \
   && cp /app/scripts/openclaw-bin.sh /usr/local/bin/openclaw \
@@ -27,11 +48,18 @@ RUN chmod +x /app/scripts/*.sh \
   && test -f /usr/local/lib/node_modules/npm/bin/npm-cli.js \
   && head -1 /usr/local/lib/node_modules/npm/bin/npm-cli.js | grep -q node
 
+# /data/venv is created at startup and must stay ahead of Debian's python3/pip.
+# uv tool installs (Control UI skill installer) write executables to UV_TOOL_BIN_DIR,
+# not UV_TOOL_DIR. The default bin dir is ~/.local/bin, which is not on PATH.
+# Keep the bin dir beside the tool dir: uv treats every child of UV_TOOL_DIR as a tool.
 ENV NPM_CONFIG_PREFIX="/data/npm-global" \
     UV_TOOL_DIR="/data/uv/tools" \
+    UV_TOOL_BIN_DIR="/data/uv/bin" \
     UV_CACHE_DIR="/data/uv/cache" \
+    UV_PYTHON_INSTALL_DIR="/data/uv/python" \
+    VIRTUAL_ENV="/data/venv" \
     GOPATH="/data/go" \
-    PATH="/data/npm-global/bin:/data/uv/tools/bin:/data/go/bin:${PATH}"
+    PATH="/data/venv/bin:/data/npm-global/bin:/data/uv/bin:/data/go/bin:${PATH}"
 
 # The node image sets HOME=/root. OpenClaw stores chat history under
 # ~/.openclaw unless these are set for every process, including `docker exec`

@@ -11,7 +11,39 @@ echo "[entrypoint] workspace dir: $WORKSPACE_DIR"
 # ── Setup Persistent Storage for Tools ────────────────────────────────────────
 
 echo "[entrypoint] setting up persistent tool storage in /data..."
-mkdir -p "$NPM_CONFIG_PREFIX/bin" "$UV_TOOL_DIR/bin" "$UV_CACHE_DIR" "$GOPATH/bin"
+UV_TOOL_DIR="${UV_TOOL_DIR:-/data/uv/tools}"
+UV_TOOL_BIN_DIR="${UV_TOOL_BIN_DIR:-/data/uv/bin}"
+UV_CACHE_DIR="${UV_CACHE_DIR:-/data/uv/cache}"
+UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-/data/uv/python}"
+# VIRTUAL_ENV is set in the image so docker exec and login shells see the venv.
+# Keep it on /data: this script deletes and recreates the directory when the
+# interpreter no longer runs.
+PYTHON_VENV="${VIRTUAL_ENV:-/data/venv}"
+case "$PYTHON_VENV" in
+  /data/*) ;;
+  *)
+    echo "[entrypoint] ERROR: Python venv must live under /data (got $PYTHON_VENV)"
+    exit 1
+    ;;
+esac
+export UV_TOOL_DIR UV_TOOL_BIN_DIR UV_CACHE_DIR UV_PYTHON_INSTALL_DIR VIRTUAL_ENV="$PYTHON_VENV"
+mkdir -p "$NPM_CONFIG_PREFIX/bin" "$UV_TOOL_DIR" "$UV_TOOL_BIN_DIR" "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR" "$GOPATH/bin"
+
+# Debian's python3 has no pip and refuses system installs (PEP 668). A venv on
+# the volume provides python3, pip, and pip3. Packages installed with those
+# commands survive container recreation. Replace the venv only when its
+# interpreter does not run, such as after a Python minor version change.
+if [ -x "$PYTHON_VENV/bin/python3" ] && "$PYTHON_VENV/bin/python3" -c 'import sys' >/dev/null 2>&1; then
+  echo "[entrypoint] using persistent Python venv at $PYTHON_VENV"
+else
+  if [ -e "$PYTHON_VENV" ]; then
+    echo "[entrypoint] replacing unusable Python venv at $PYTHON_VENV"
+    rm -rf "$PYTHON_VENV"
+  else
+    echo "[entrypoint] creating persistent Python venv at $PYTHON_VENV"
+  fi
+  /usr/bin/python3 -m venv "$PYTHON_VENV"
+fi
 
 # Linuxbrew persistence and symlinking
 BREW_PERSIST_DIR="/data/linuxbrew"
@@ -35,9 +67,12 @@ fi
 cat << 'EOF' > /etc/profile.d/custom-tools.sh
 export NPM_CONFIG_PREFIX="/data/npm-global"
 export UV_TOOL_DIR="/data/uv/tools"
+export UV_TOOL_BIN_DIR="/data/uv/bin"
 export UV_CACHE_DIR="/data/uv/cache"
+export UV_PYTHON_INSTALL_DIR="/data/uv/python"
+export VIRTUAL_ENV="/data/venv"
 export GOPATH="/data/go"
-export PATH="/data/npm-global/bin:/data/uv/tools/bin:/data/go/bin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/usr/local/go/bin:$PATH"
+export PATH="/data/venv/bin:/data/npm-global/bin:/data/uv/bin:/data/go/bin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/usr/local/go/bin:/root/.local/bin:$PATH"
 EOF
 chmod +x /etc/profile.d/custom-tools.sh
 
@@ -75,7 +110,7 @@ GATEWAY_TOKEN="$OPENCLAW_GATEWAY_TOKEN"
 # Providers always read API keys from env vars, never from JSON config.
 HAS_PROVIDER=0
 for key in ANTHROPIC_API_KEY OPENAI_API_KEY OPENROUTER_API_KEY GEMINI_API_KEY \
-           XAI_API_KEY GROQ_API_KEY MISTRAL_API_KEY CEREBRAS_API_KEY \
+           DEEPSEEK_API_KEY XAI_API_KEY GROQ_API_KEY MISTRAL_API_KEY CEREBRAS_API_KEY \
            VENICE_API_KEY MOONSHOT_API_KEY KIMI_API_KEY MINIMAX_API_KEY \
            ZAI_API_KEY AI_GATEWAY_API_KEY OPENCODE_API_KEY OPENCODE_ZEN_API_KEY \
            SYNTHETIC_API_KEY COPILOT_GITHUB_TOKEN XIAOMI_API_KEY; do
@@ -114,7 +149,7 @@ if [ "$HAS_PROVIDER" -eq 0 ]; then
   echo "[entrypoint] ERROR: At least one AI provider API key env var is required."
   echo "[entrypoint] Providers read API keys from env vars, never from the JSON config."
   echo "[entrypoint] Set one of: ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, GEMINI_API_KEY,"
-  echo "[entrypoint]   XAI_API_KEY, GROQ_API_KEY, MISTRAL_API_KEY, CEREBRAS_API_KEY, VENICE_API_KEY,"
+  echo "[entrypoint]   DEEPSEEK_API_KEY, XAI_API_KEY, GROQ_API_KEY, MISTRAL_API_KEY, CEREBRAS_API_KEY, VENICE_API_KEY,"
   echo "[entrypoint]   MOONSHOT_API_KEY, KIMI_API_KEY, MINIMAX_API_KEY, ZAI_API_KEY, AI_GATEWAY_API_KEY,"
   echo "[entrypoint]   OPENCODE_API_KEY, SYNTHETIC_API_KEY, COPILOT_GITHUB_TOKEN, XIAOMI_API_KEY"
   echo "[entrypoint] Or: AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY (Bedrock), OLLAMA_BASE_URL (local),"
