@@ -4,22 +4,30 @@
 
 ### Minimal (`docker run`)
 
+A single container does not need the browser sidecar. nginx starts either way. `/browser/` returns 502 until that sidecar is on the same Docker network. An older image failed this command with `host not found in upstream "browser"` because nginx resolved that name at startup ([#78](https://github.com/coollabsio/openclaw/issues/78)). The current entrypoint proxies `/browser/` through a variable and Docker's DNS, so a missing sidecar does not stop nginx.
+
 ```bash
 docker run -d \
   --name openclaw \
+  --restart unless-stopped \
   -p 8080:8080 \
   -e ANTHROPIC_API_KEY=sk-ant-... \
+  -e AUTH_USERNAME=admin \
   -e AUTH_PASSWORD=changeme \
-  -e OPENCLAW_GATEWAY_TOKEN=my-secret-token \
+  -e OPENCLAW_GATEWAY_TOKEN="$(openssl rand -hex 32)" \
+  -e OPENCLAW_ALLOWED_ORIGINS=http://localhost:8080,http://127.0.0.1:8080 \
   -v openclaw-data:/data \
   coollabsio/openclaw:latest
 ```
 
-- `ANTHROPIC_API_KEY` — any [supported provider key](#ai-providers-at-least-one-required) works (OpenAI, Gemini, etc.)
-- `AUTH_PASSWORD` — protects the web UI with HTTP basic auth (user defaults to `admin`, override with `AUTH_USERNAME`)
-- `OPENCLAW_GATEWAY_TOKEN` — required gateway token. The container exits if it is missing. Generate one with `openssl rand -hex 32`
-- `OPENCLAW_ALLOWED_ORIGINS` — optional browser origins for the Control UI. Coolify adds the application origin on its own. Set this for any other origin, such as `http://localhost:5173`
-- `/data` — required volume. Persists config, credentials, workspace, and chat history across container recreates (`docker compose down` keeps the named volume; `docker compose down -v` deletes it). OpenClaw 2026.10.5 stores sessions in `/data/.openclaw/agents/<agentId>/agent/openclaw-agent.sqlite`. The image sets `HOME` and `OPENCLAW_HOME` to `/data` so `~/.openclaw` is that directory. `/root/.openclaw` is outside the volume.
+Open `http://localhost:8080` and sign in as `admin` / `changeme` (or whatever you set). `GET /healthz` is not behind basic auth and returns `{"ok":true,"status":"live"}` once the gateway is up. The first boot copies Linuxbrew onto the volume, so that can take a few minutes. The container's `HEALTHCHECK` start period is 5 minutes.
+
+- `ANTHROPIC_API_KEY` — any non-empty [supported provider key](#ai-providers-at-least-one-required) works (OpenAI, Gemini, and the rest). The entrypoint exits if none is set. The value is not checked against the provider until a model call.
+- `AUTH_PASSWORD` — HTTP basic auth for the web UI and the WebSocket. `AUTH_USERNAME` defaults to `admin` when omitted. `/healthz` stays open.
+- `OPENCLAW_GATEWAY_TOKEN` — required. The container exits if it is missing or empty. It is written to `gateway.auth.token`. The command above generates one. Save that value. The Mac app and the Control UI both need it. A placeholder such as `my-secret-token` also starts the container.
+- `OPENCLAW_ALLOWED_ORIGINS` — browser origins allowed to open the Control UI WebSocket. Coolify adds the application origin on its own, so a Coolify deploy can leave this unset. A plain `docker run` has no Coolify URL. nginx forwards `X-Forwarded-*`, and OpenClaw 2026.10.5 then does not treat `http://localhost:8080` as an implicit same-origin client. Set the origin you actually open. `http://localhost:5173` and `http://localhost:3000` are other dev servers. They do not allow the UI on port 8080, and the page will load while the gateway rejects the socket with `origin not allowed`.
+- `-p 8080:8080` — nginx. The gateway listens on `127.0.0.1:18789` inside the container and is not published. Do not map 18789 unless you mean to skip nginx. See [Connect the Mac app](docs/mac-app.md).
+- `/data` — required volume. Persists config, credentials, paired devices, workspace, and chat history across container recreates (`docker compose down` keeps the named volume; `docker compose down -v` deletes it). OpenClaw 2026.10.5 stores sessions in `/data/.openclaw/agents/<agentId>/agent/openclaw-agent.sqlite` and paired devices in `/data/.openclaw/state/openclaw.sqlite`. The image sets `HOME` and `OPENCLAW_HOME` to `/data` so `~/.openclaw` is that directory. `/root/.openclaw` is outside the volume. Backups: [Back up and restore `/data`](docs/backup-restore.md).
 
 ### Full Setup (docker-compose)
 
@@ -73,6 +81,14 @@ If approval still fails, match the message:
 | `gateway device.pair.list requires credentials` or `gateway url override requires explicit credentials` | Pass the container's `OPENCLAW_GATEWAY_TOKEN` with `--token` when you also pass `--url`. With no `--url`, the env token is used. `HOME` and `OPENCLAW_HOME` are `/data`, so a shell that dropped the token still reads `gateway.auth.token` from `/data/.openclaw/openclaw.json`. |
 | `This device can't approve its own scope upgrade` or `scope upgrade pending approval` | The CLI authenticated as a paired device and asked for scopes that device does not have. Approve the **browser** request id from `openclaw devices list` on the loopback gateway with `OPENCLAW_GATEWAY_TOKEN` set and no `--url`. The CLI cannot approve its own pending scope upgrade. |
 
+### Mac app
+
+The Mac app uses the same approval commands, with a different URL. On OpenClaw v2026.10.5 the gateway address is `wss://<your domain>` (Coolify) or `ws://<host>:8080` (`docker run`), and `OPENCLAW_GATEWAY_TOKEN` goes in the token field, not in the URL. `gateway.mode` on the Mac is `remote`. Do not write that `gateway.remote` block into the container config, and do not put `AUTH_USERNAME`:`AUTH_PASSWORD` in the WebSocket URL. The app rejects URL userinfo. When `AUTH_PASSWORD` is set, nginx still requires basic auth on the WebSocket, which that direct URL cannot send. Details, including the SSH alternative: [Connect the Mac app](docs/mac-app.md).
+
+### Back up and restore `/data`
+
+Stop the container and archive the volume, or use `openclaw backup create` for a SQLite-safe snapshot while the gateway stays up. Paired devices live in `/data/.openclaw/state/openclaw.sqlite`, not in a JSON file you can copy by itself. Coolify 4.3.0+ can schedule that volume backup. Use **Stop containers during archive**. There is no dashboard restore. Steps: [Back up and restore `/data`](docs/backup-restore.md).
+
 ## Architecture
 
 ```
@@ -119,8 +135,10 @@ scripts/configure.js                — reads env vars, writes/patches openclaw.
 scripts/entrypoint.sh               — configure → doctor → generated nginx site → gateway
 scripts/preserve-hand-edits.js      — parks unrecognized top-level keys in openclaw.extra.json
 scripts/smoke.js                    — smoke test (openclaw --version)
-Dockerfile.browser                  — browser sidecar image
+Dockerfile.browser                  — browser sidecar image (FROM lscr.io/linuxserver/chromium)
 browser/cdp-proxy.conf              — sidecar CDP proxy 0.0.0.0:9223 → 127.0.0.1:9222
+docs/backup-restore.md              — back up and restore /data, including Coolify volume backups
+docs/mac-app.md                     — connect the OpenClaw Mac app to this gateway
 .dockerignore                       — standard ignores
 .env.example                        — env var reference
 ```
@@ -294,7 +312,28 @@ When hooks are enabled and `AUTH_PASSWORD` is set, the hooks path automatically 
 | `BROWSER_DEFAULT_PROFILE` | | Override the default browser profile name. |
 | `BROWSER_SSRF_ALLOW_COMPOSE_SIDECAR` | | Set to `false` or `0` to skip the automatic `browser` hostname allowance. Any other value, including unset, leaves that allowance on when the CDP hostname is exactly `browser`. |
 
-[`docker-compose.yml`](docker-compose.yml) runs `coollabsio/openclaw-browser` on the same compose network. Docs: https://docs.openclaw.ai/tools/browser
+[`docker-compose.yml`](docker-compose.yml) runs `coollabsio/openclaw-browser` on the same compose network. That image is built from [`Dockerfile.browser`](Dockerfile.browser), which starts `FROM lscr.io/linuxserver/chromium:latest`. Compose does not pull the linuxserver image directly. Docs: https://docs.openclaw.ai/tools/browser
+
+#### Why linuxserver/chromium, and how to use a lighter browser
+
+[Issue #30](https://github.com/coollabsio/openclaw/issues/30) asks why the sidecar is `lscr.io/linuxserver/chromium`. It is a remote desktop (Selkies), not a headless Chromium binary. The desktop is what `/browser/` shows, so you can pass an OAuth prompt, a captcha, or 2FA and have the agent reuse that profile over CDP. The linuxserver image serves that desktop on container port 3000, which this image's nginx proxies at `/browser/` behind basic auth. Chromium still binds DevTools to `127.0.0.1:9222`. [`browser/cdp-proxy.conf`](browser/cdp-proxy.conf) is added to Selkies' existing nginx so the compose network can use `http://browser:9223`. `kasmweb/chrome` was the previous sidecar. Its desktop is on port 6901 and its CDP flags are not the ones this proxy expects, so it was replaced rather than used as the lighter option. The extra apps inside the desktop image are unused. The desktop is the part the login flow needs.
+
+A headless Chromium does not need that image. Leave the `browser` service out (a plain `docker run` already does) and set `BROWSER_CDP_URL` to a CDP endpoint the gateway can reach. `configure.js` writes it to `browser.cdpUrl`. OpenClaw 2026.10.5 then attaches and does not launch a browser inside the gateway container (`docs/tools/browser/remote.md`). `headless` only applies to a local browser OpenClaw itself starts. It does not change a remote CDP endpoint.
+
+Accepted `BROWSER_CDP_URL` shapes, from those docs:
+
+- `http://host:port` or `https://host:port` — OpenClaw reads `/json/version` and uses the advertised WebSocket.
+- `ws://host:port/devtools/browser/<id>` (or `wss://`) — connect that socket directly.
+- A bare `ws://host:port` — try `/json/version` first, then the bare socket (Browserless-style hosts).
+
+The hostname `browser` is the only private name this image allowlists on its own. Another container hostname needs an explicit allowlist. A raw private IP is not allowlisted. Loopback CDP (a port published on `127.0.0.1` of the gateway container) also needs `attachOnly: true` on that profile, or OpenClaw treats the port as a browser it owns. There is no env var for `attachOnly`. Set it in the custom JSON mount or `OPENCLAW_CONFIG_JSON`.
+
+```bash
+BROWSER_CDP_URL=http://chromium:9223
+OPENCLAW__browser__ssrfPolicy__allowedHostnames[]=chromium
+```
+
+Stock Chromium ignores `--remote-debugging-address` and listens on `127.0.0.1` only, so another container cannot open that port. The lighter process still needs something listening on the compose network: Browserless, or any CDP proxy that forwards to the loopback DevTools port the way `cdp-proxy.conf` does. You do not get `/browser/`. A headless process has no screen for a captcha or an OAuth consent page. Use the desktop sidecar when a site requires that. Docs: https://docs.openclaw.ai/tools/browser/remote
 
 | What | Where |
 |---|---|
