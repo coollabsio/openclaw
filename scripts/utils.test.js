@@ -952,6 +952,58 @@ function runOpenAICompatibleConfigure(env, customConfig) {
   eq(run.written.agents.defaults.model.primary, 'anthropic/claude-opus-4-5-20251101', 'Anthropic stays ahead of the custom provider');
 }
 
+console.log('configure.js DeepSeek');
+
+{
+  const run = runOpenAICompatibleConfigure({ DEEPSEEK_API_KEY: 'sk-deepseek-test' });
+  eq(run.status, 0, 'configure.js accepts DEEPSEEK_API_KEY alone');
+  eq(run.written.agents.defaults.model.primary, 'deepseek/deepseek-v4-pro', 'DeepSeek auto primary is deepseek-v4-pro');
+  assert(
+    !run.written.models || !run.written.models.providers || !run.written.models.providers.deepseek,
+    'DeepSeek is not written under models.providers',
+  );
+  assert(run.output.includes('DeepSeek provider enabled'), 'configure.js logs that DeepSeek is enabled');
+  assert(!run.output.includes('sk-deepseek-test'), 'configure.js does not log the DeepSeek key');
+}
+
+{
+  const run = runOpenAICompatibleConfigure({
+    GEMINI_API_KEY: 'gemini-test',
+    DEEPSEEK_API_KEY: 'sk-deepseek-test',
+  });
+  eq(run.status, 0, 'configure.js accepts Gemini and DeepSeek together');
+  eq(run.written.agents.defaults.model.primary, 'google/gemini-3-pro', 'Gemini stays ahead of DeepSeek');
+}
+
+console.log('entrypoint DeepSeek provider gate');
+
+function runEntrypointProviderLoop(env) {
+  const entrypoint = fs.readFileSync(path.join(__dirname, 'entrypoint.sh'), 'utf8');
+  const start = entrypoint.indexOf('HAS_PROVIDER=0\nfor key in');
+  const end = entrypoint.indexOf('# Base URL and model are both required');
+  if (start < 0 || end < 0) {
+    throw new Error('provider loop markers missing from entrypoint.sh');
+  }
+  const result = spawnSync(
+    'bash',
+    ['-c', `set -euo pipefail\n${entrypoint.slice(start, end)}\nprintf 'HAS_PROVIDER=%s\\n' "$HAS_PROVIDER"\n`],
+    { encoding: 'utf8', env: { ...env, PATH: process.env.PATH } },
+  );
+  return { status: result.status, output: `${result.stdout || ''}\n${result.stderr || ''}` };
+}
+
+{
+  const run = runEntrypointProviderLoop({ DEEPSEEK_API_KEY: 'sk-deepseek-test' });
+  eq(run.status, 0, 'entrypoint provider loop runs');
+  assert(run.output.includes('HAS_PROVIDER=1'), 'DEEPSEEK_API_KEY alone counts as a provider');
+  assert(!run.output.includes('sk-deepseek-test'), 'entrypoint provider loop does not print the key');
+}
+
+{
+  const run = runEntrypointProviderLoop({});
+  assert(run.output.includes('HAS_PROVIDER=0'), 'the provider loop stays closed with no keys');
+}
+
 // The entrypoint gate must use the helper, not a warning that always names both.
 console.log('entrypoint OpenAI-compatible gate');
 
