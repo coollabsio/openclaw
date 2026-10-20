@@ -20,6 +20,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends apache2-utils
           node scripts/utils.test.js
           node scripts/nginx-bearer.test.js
+          node scripts/docker-cli.test.js
 
   docker-build:
     runs-on: ubuntu-latest
