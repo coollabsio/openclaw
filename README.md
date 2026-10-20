@@ -101,7 +101,9 @@ Stop the container and archive the volume, or use `openclaw backup create` for a
 │    │     └── agents/<id>/agent/             │
 │    │           openclaw-agent.sqlite        │
 │    │           (chat history)               │
-│    └── workspace/      (user projects)      │
+│    ├── workspace/      (user projects)      │
+│    ├── venv/           (pip packages)       │
+│    └── uv/             (uv tool installs)   │
 │                                             │
 │  ┌──────────┐  :8080   ┌────────────────┐  │
 │  │  nginx    │ ──────→  │  openclaw      │  │
@@ -558,10 +560,13 @@ The base image includes common skill dependencies baked in:
 
 - **Linuxbrew** — `/home/linuxbrew/.linuxbrew` — skills that need `brew` work out of the box
 - **Go** — `/usr/local/go` — for Go-based skills and tools
-- **uv** — fast Python package manager for Python-based skills
+- **Python 3** — `python3`, `pip`, `pip3`, and `python3 -m venv`. Startup creates a virtualenv at `/data/venv` and puts it first on `PATH`.
+- **uv** — `uv` and `uvx`. The Control UI installs Python skills with `uv tool install`.
 - **build-essential**, **git**, **curl** — common build dependencies
 
 On first start the entrypoint copies Linuxbrew to `/data/linuxbrew` and points `/home/linuxbrew/.linuxbrew` at that directory, so `brew install` stays on the volume across container recreates. `docker compose down -v` deletes it. Packages from `OPENCLAW_DOCKER_APT_PACKAGES` are installed into the container layer on every start.
+
+`pip install` goes into `/data/venv`, so those packages stay on the volume when the container is recreated and do not hit Debian's externally-managed-environment (PEP 668) error. `uv tool install` keeps tool environments under `/data/uv` (`UV_TOOL_DIR`, `UV_TOOL_BIN_DIR`, `UV_CACHE_DIR`, `UV_PYTHON_INSTALL_DIR`).
 
 ### ClawHub skills
 
