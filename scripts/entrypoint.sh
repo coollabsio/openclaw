@@ -85,11 +85,31 @@ done
 [ -n "${OLLAMA_BASE_URL:-}" ] && HAS_PROVIDER=1
 # Base URL and model are both required. A key alone must not count as a provider.
 # The key is optional for local servers and is never printed.
-if [ -n "${OPENAI_COMPATIBLE_BASE_URL:-}" ] && [ -n "${OPENAI_COMPATIBLE_MODEL:-}" ]; then
-  HAS_PROVIDER=1
-elif [ -n "${OPENAI_COMPATIBLE_API_KEY:-}" ] || [ -n "${OPENAI_COMPATIBLE_BASE_URL:-}" ] || [ -n "${OPENAI_COMPATIBLE_MODEL:-}" ]; then
-  echo "[entrypoint] WARNING: skipping OpenAI-compatible provider — OPENAI_COMPATIBLE_BASE_URL and OPENAI_COMPATIBLE_MODEL are required. OPENAI_COMPATIBLE_API_KEY is optional for local servers without auth."
+# Name whichever required variable is missing, using the same helper as configure.js.
+# >>> openai-compatible-gate
+_openclaw_utils="${OPENCLAW_UTILS_JS:-}"
+if [ -z "$_openclaw_utils" ]; then
+  _openclaw_utils="$(cd "$(dirname "$0")" && pwd)/utils.js"
 fi
+openai_compatible_status="$(node -e '
+const { resolveOpenAICompatibleProvider } = require(process.argv[1]);
+const result = resolveOpenAICompatibleProvider({
+  apiKey: process.env.OPENAI_COMPATIBLE_API_KEY,
+  baseUrl: process.env.OPENAI_COMPATIBLE_BASE_URL,
+  model: process.env.OPENAI_COMPATIBLE_MODEL,
+});
+if (result.action === "apply") {
+  process.stdout.write("apply");
+} else if (result.action === "incomplete" && result.warning) {
+  process.stdout.write(result.warning.replace(/^\[configure\]/, "[entrypoint]"));
+}
+' "$_openclaw_utils")"
+if [ "$openai_compatible_status" = "apply" ]; then
+  HAS_PROVIDER=1
+elif [ -n "$openai_compatible_status" ]; then
+  printf '%s\n' "$openai_compatible_status"
+fi
+# <<< openai-compatible-gate
 if [ "$HAS_PROVIDER" -eq 0 ]; then
   echo "[entrypoint] ERROR: At least one AI provider API key env var is required."
   echo "[entrypoint] Providers read API keys from env vars, never from the JSON config."
@@ -209,13 +229,14 @@ echo "[entrypoint] running configure..."
 node /app/scripts/configure.js
 chmod 600 "$STATE_DIR/openclaw.json"
 
-# ── Doctor repairs, preserving hand-edited top-level keys ───────────────────
+# ── Doctor repairs, parking unrecognized top-level keys ─────────────────────
 # OpenClaw 2026.10.5 validates openclaw.json with a strict object schema.
 # `openclaw doctor --fix` rewrites the file through that schema, so an extra
-# top-level key disappears. `gateway run` then refuses to start if the key is
-# still there ("Unrecognized key"). Once the gateway is up, the same key only
-# makes config reload skip ("config reload skipped (invalid config)"); the
-# process keeps the valid config it already loaded.
+# top-level key disappears. Leaving that key in openclaw.json makes
+# `gateway run` exit at process start ("Unrecognized key"). Writing it back
+# after the gateway is listening keeps the process up (reload is skipped) but
+# the CLI exits 1 on the same error, which breaks `devices list`, `devices
+# approve`, and `sessions`.
 #
 # Doctor still runs on every start. configure.js reapplies env-driven values
 # each boot, including model ids that doctor upgrades, and upgrades must keep
@@ -223,9 +244,10 @@ chmod 600 "$STATE_DIR/openclaw.json"
 # that skips doctor leaves the reapplied env value unmigrated and the gateway
 # exits. Related to #15.
 #
-# Hand-edited top-level keys are snapshotted here and written back after the
-# gateway is listening (see the end of this script). Nested env-driven settings
-# are not reverted, so a doctor migration of those settings stays in effect.
+# Keys doctor removes are parked in openclaw.extra.json on the state volume.
+# openclaw.json stays as doctor wrote it. Nested env-driven settings are not
+# reverted. A volume that already has those keys in openclaw.json is migrated
+# here: doctor strips them, and restore writes the sidecar.
 echo "[entrypoint] snapshotting config before openclaw doctor --fix..."
 node /app/scripts/preserve-hand-edits.js snapshot || echo "[entrypoint] WARNING: could not snapshot hand-edited keys"
 echo "[entrypoint] running openclaw doctor --fix..."
@@ -237,6 +259,7 @@ openclaw doctor --fix 2>&1 || doctor_status=$?
 if [ "$doctor_status" -ne 0 ]; then
   echo "[entrypoint] WARNING: openclaw doctor --fix exited $doctor_status"
 fi
+node /app/scripts/preserve-hand-edits.js restore || echo "[entrypoint] WARNING: could not park hand-edited keys"
 
 # ── Read hooks path from generated config (if hooks enabled) ─────────────────
 HOOKS_PATH=""
@@ -474,16 +497,21 @@ server {
     absolute_redirect off;
 
     location = /healthz {
+        # No basic auth: Coolify and the image HEALTHCHECK probe this path.
+        # proxy_pass has no URI on purpose. A trailing slash rewrites /healthz
+        # to / and the gateway answers with the Control UI. The live probe is
+        # the gateway's own /healthz.
         access_log off;
-        proxy_pass http://127.0.0.1:${GATEWAY_PORT}/;
+        proxy_pass http://127.0.0.1:${GATEWAY_PORT};
         proxy_set_header Host \$host;
         proxy_connect_timeout 2s;
+        proxy_read_timeout 4s;
         error_page 502 503 504 = @healthz_fallback;
     }
 
     location @healthz_fallback {
-        return 200 '{"ok":true,"gateway":"starting"}';
         default_type application/json;
+        return 503 '{"ok":false,"status":"unavailable"}';
     }
 
     ${HOOKS_LOCATION_BLOCK}
@@ -556,25 +584,16 @@ openclaw gateway run &
 GATEWAY_PID=$!
 trap 'kill -TERM "$GATEWAY_PID" 2>/dev/null || true; wait "$GATEWAY_PID" 2>/dev/null || true; exit 0' TERM INT
 
-# The gateway reads config before it listens. Restoring an unrecognized key
-# any earlier makes this process exit. After listen, a reload of that key is
-# skipped and the loaded config (including env-driven settings) stays.
-GATEWAY_READY=0
-for _ in $(seq 1 180); do
-  if ! kill -0 "$GATEWAY_PID" 2>/dev/null; then
-    echo "[entrypoint] gateway exited before it was ready; leaving doctor output in place"
-    wait "$GATEWAY_PID" || true
-    exit 1
+# Keep pid 1 and nginx alive if the gateway process exits. /healthz then
+# returns 503 and the image HEALTHCHECK can mark the container unhealthy.
+# Exiting here would stop the container before those probes run.
+gateway_gone=0
+while true; do
+  if [ "$gateway_gone" -eq 0 ] && ! kill -0 "$GATEWAY_PID" 2>/dev/null; then
+    gateway_status=0
+    wait "$GATEWAY_PID" || gateway_status=$?
+    gateway_gone=1
+    echo "[entrypoint] gateway exited with status ${gateway_status}; /healthz will return 503"
   fi
-  if node -e "const n=require('net'); const s=n.connect(${GATEWAY_PORT}, '127.0.0.1', ()=>{s.end(); process.exit(0)}); s.on('error', ()=>process.exit(1)); setTimeout(()=>process.exit(1), 400)"; then
-    GATEWAY_READY=1
-    break
-  fi
-  sleep 1
+  sleep 2 || true
 done
-if [ "$GATEWAY_READY" -eq 1 ]; then
-  node /app/scripts/preserve-hand-edits.js restore || echo "[entrypoint] WARNING: could not restore hand-edited keys"
-else
-  echo "[entrypoint] gateway port not open; not restoring hand-edited keys"
-fi
-wait "$GATEWAY_PID"

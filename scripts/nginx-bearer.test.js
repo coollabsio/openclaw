@@ -209,6 +209,15 @@ const mainNoAuth = render(mainFile, { AUTH_PASSWORD: "" });
 function normalizeRendered(text) {
   return text.replace(/\/tmp\/ocw-nginx-[A-Za-z0-9]+/g, "/tmp/ocw-nginx-TEST");
 }
+function stripHealthz(text) {
+  const stripped = text
+    .replace(/\n    location = \/healthz \{[\s\S]*?\n    \}\n/, "\n    # HEALTHZ\n")
+    .replace(/\n    location @healthz_fallback \{[\s\S]*?\n    \}\n/, "\n    # HEALTHZ_FALLBACK\n");
+  if (stripped === text) {
+    throw new Error("healthz location block not found while comparing nginx configs");
+  }
+  return stripped;
+}
 function stripBrowserLocation(text) {
   const stripped = text.replace(
     /\n    # Browser sidecar proxy \(VNC web UI\)[^\n]*\n    location \/browser\/ \{[\s\S]*?\n    \}\n/,
@@ -219,11 +228,11 @@ function stripBrowserLocation(text) {
   }
   return stripped;
 }
-const noAuthNorm = stripBrowserLocation(normalizeRendered(noAuth));
-const mainNoAuthNorm = stripBrowserLocation(normalizeRendered(mainNoAuth));
+const noAuthNorm = stripHealthz(stripBrowserLocation(normalizeRendered(noAuth)));
+const mainNoAuthNorm = stripHealthz(stripBrowserLocation(normalizeRendered(mainNoAuth)));
 assert(
   noAuthNorm === mainNoAuthNorm,
-  "AUTH_PASSWORD unset nginx config matches main aside from the lazy /browser/ upstream",
+  "AUTH_PASSWORD unset nginx config matches main aside from /healthz and the lazy /browser/ upstream",
 );
 if (noAuthNorm !== mainNoAuthNorm) {
   const a = noAuthNorm.split("\n");
@@ -245,33 +254,88 @@ assert(
   !entrypointSource.includes(".doctor-fix-version"),
   "entrypoint does not skip doctor based on a version marker",
 );
+const snapshotCmd = entrypointSource.indexOf("\nnode /app/scripts/preserve-hand-edits.js snapshot");
+const doctorCmd = entrypointSource.indexOf("\nopenclaw doctor --fix 2>&1");
+const restoreCmd = entrypointSource.indexOf("\nnode /app/scripts/preserve-hand-edits.js restore");
+const gatewayCmd = entrypointSource.indexOf("\nopenclaw gateway run");
+assert(snapshotCmd > 0 && doctorCmd > snapshotCmd, "hand-edited keys are snapshotted before doctor");
 assert(
-  entrypointSource.includes("preserve-hand-edits.js snapshot") &&
-    entrypointSource.includes("preserve-hand-edits.js restore"),
-  "hand-edited keys are snapshotted before doctor and restored after the gateway listens",
+  restoreCmd > doctorCmd && gatewayCmd > restoreCmd,
+  "unrecognized keys are parked after doctor and before the gateway starts",
+);
+assert(
+  !entrypointSource.includes("not restoring hand-edited keys"),
+  "restore is not delayed until the gateway listens",
+);
+assert(
+  entrypointSource.includes("gateway exited with status") &&
+    entrypointSource.includes("/healthz will return 503"),
+  "entrypoint stays up after the gateway exits so the healthcheck can fail",
 );
 
-// doctor --fix drops unrecognized top-level keys. The helper puts only those
-// keys back and leaves nested env/migration edits alone.
+function healthzBlock(conf) {
+  const start = conf.indexOf("location = /healthz");
+  const end = conf.indexOf("location @healthz_fallback");
+  const fallbackEnd = conf.indexOf("location ", end + 1);
+  return {
+    location: conf.slice(start, end),
+    fallback: conf.slice(end, fallbackEnd === -1 ? undefined : fallbackEnd),
+  };
+}
+for (const [label, conf] of [["auth", withAuth], ["no-auth", noAuth]]) {
+  const block = healthzBlock(conf);
+  assert(
+    block.location.includes("proxy_pass http://127.0.0.1:18789;"),
+    `${label} /healthz proxies the gateway without rewriting the URI`,
+  );
+  assert(
+    !block.location.includes("proxy_pass http://127.0.0.1:18789/;"),
+    `${label} /healthz does not rewrite the URI to /`,
+  );
+  assert(!block.location.includes("auth_basic"), `${label} /healthz is not behind basic auth`);
+  assert(block.fallback.includes('return 503 \''), `${label} /healthz fallback returns 503`);
+  assert(!block.fallback.includes("return 200"), `${label} /healthz fallback is not 200`);
+  assert(
+    block.fallback.includes('{"ok":false,"status":"unavailable"}'),
+    `${label} /healthz fallback is not a live probe body`,
+  );
+}
+
+const dockerfile = fs.readFileSync(path.join(ROOT, "Dockerfile"), "utf8");
+assert(dockerfile.includes("curl -f http://localhost:${PORT:-8080}/healthz"), "HEALTHCHECK uses curl -f on /healthz");
+assert(dockerfile.includes("--start-period=300s"), "HEALTHCHECK start-period covers first boot");
+assert(!dockerfile.includes("--start-period=10s"), "HEALTHCHECK no longer uses the 10s start period");
+
+// doctor --fix drops unrecognized top-level keys. The helper parks only those
+// keys in the sidecar and leaves openclaw.json, including nested migrations, alone.
 function runPreserve(action, dir, config) {
   const configPath = path.join(dir, "openclaw.json");
   const stash = path.join(dir, "stash.json");
+  const extraPath = path.join(dir, "openclaw.extra.json");
   if (config) fs.writeFileSync(configPath, JSON.stringify(config));
-  execFileSync("node", [path.join(ROOT, "scripts/preserve-hand-edits.js"), action], {
+  const stdout = execFileSync("node", [path.join(ROOT, "scripts/preserve-hand-edits.js"), action], {
     env: {
       ...process.env,
       OPENCLAW_CONFIG_PATH: configPath,
       OPENCLAW_HAND_EDIT_STASH: stash,
+      OPENCLAW_EXTRA_CONFIG: extraPath,
       OPENCLAW_STATE_DIR: dir,
     },
-    stdio: ["ignore", "ignore", "inherit"],
+    encoding: "utf8",
   });
   return {
     config: JSON.parse(fs.readFileSync(configPath, "utf8")),
+    configBytes: fs.readFileSync(configPath),
     stashExists: fs.existsSync(stash),
+    extra: fs.existsSync(extraPath) ? JSON.parse(fs.readFileSync(extraPath, "utf8")) : null,
+    stdout,
   };
 }
 
+const doctorConfig = {
+  gateway: { auth: { mode: "token", token: "from-env" }, port: 18789 },
+  agents: { defaults: { model: { primary: "anthropic/claude-sonnet-4-6" } } },
+};
 const handDir = fs.mkdtempSync(path.join(os.tmpdir(), "ocw-hand-"));
 runPreserve("snapshot", handDir, {
   "x-hand-edit": { note: "keep-me", n: 7 },
@@ -279,16 +343,15 @@ runPreserve("snapshot", handDir, {
   agents: { defaults: { model: { primary: "anthropic/claude-sonnet-4-5" } } },
 });
 // What doctor --fix does: drop the unknown top-level key and migrate a nested value.
-fs.writeFileSync(
-  path.join(handDir, "openclaw.json"),
-  JSON.stringify({
-    gateway: { auth: { mode: "token", token: "from-env" }, port: 18789 },
-    agents: { defaults: { model: { primary: "anthropic/claude-sonnet-4-6" } } },
-  }),
-);
+const doctorPath = path.join(handDir, "openclaw.json");
+fs.writeFileSync(doctorPath, JSON.stringify(doctorConfig));
+const doctorBytes = fs.readFileSync(doctorPath);
 const restored = runPreserve("restore", handDir);
-assert(restored.config["x-hand-edit"].note === "keep-me", "unknown top-level key is restored");
-assert(restored.config["x-hand-edit"].n === 7, "restored top-level value is unchanged");
+assert(restored.config["x-hand-edit"] === undefined, "unknown top-level key is not written back into openclaw.json");
+assert(restored.extra["x-hand-edit"].note === "keep-me", "unknown top-level key is parked in the sidecar");
+assert(restored.extra["x-hand-edit"].n === 7, "parked top-level value is unchanged");
+assert(!Object.prototype.hasOwnProperty.call(restored.extra, "gateway"), "schema keys are not copied into the sidecar");
+assert(restored.configBytes.equals(doctorBytes), "restore does not rewrite openclaw.json");
 assert(
   restored.config.agents.defaults.model.primary === "anthropic/claude-sonnet-4-6",
   "doctor migration of an env-driven nested setting is kept",
@@ -296,8 +359,64 @@ assert(
 assert(restored.config.gateway.auth.token === "from-env", "env-driven gateway token is kept");
 assert(!restored.stashExists, "hand-edit stash is removed after restore");
 const second = runPreserve("restore", handDir);
-assert(!second.config["x-hand-edit"] || second.config["x-hand-edit"].note === "keep-me", "restore is safe when the stash is already gone");
+assert(second.config["x-hand-edit"] === undefined, "restore is safe when the stash is already gone");
+assert(second.extra["x-hand-edit"].note === "keep-me", "a second restore leaves the parked key in place");
 assert(second.config.gateway.auth.token === "from-env", "a second restore does not rewrite env settings");
+
+// Next boot: the sidecar is merged into the snapshot, doctor never sees the key,
+// and the key is parked again. openclaw.json stays schema-valid.
+runPreserve("snapshot", handDir);
+fs.writeFileSync(doctorPath, JSON.stringify(doctorConfig));
+const againBytes = fs.readFileSync(doctorPath);
+const again = runPreserve("restore", handDir);
+assert(again.extra["x-hand-edit"].note === "keep-me", "parked key survives another doctor run");
+assert(again.config["x-hand-edit"] === undefined, "a later doctor run does not put the key back");
+assert(again.configBytes.equals(againBytes), "a later restore still does not rewrite openclaw.json");
+
+// Editing the sidecar is what a restart preserves.
+fs.writeFileSync(
+  path.join(handDir, "openclaw.extra.json"),
+  JSON.stringify({ "x-hand-edit": { note: "edited-in-sidecar", n: 9 } }),
+);
+runPreserve("snapshot", handDir);
+fs.writeFileSync(doctorPath, JSON.stringify(doctorConfig));
+const edited = runPreserve("restore", handDir);
+assert(edited.extra["x-hand-edit"].note === "edited-in-sidecar", "a sidecar edit survives the next start");
+assert(edited.extra["x-hand-edit"].n === 9, "a sidecar edit keeps its new value");
+
+// Existing volume: the previous image wrote the unknown key back into openclaw.json.
+const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "ocw-hand-legacy-"));
+runPreserve("snapshot", legacyDir, {
+  "x-hand-edit": { note: "legacy-volume", n: 3 },
+  gateway: { port: 18789 },
+});
+fs.writeFileSync(path.join(legacyDir, "openclaw.json"), JSON.stringify({ gateway: { port: 18789 } }));
+const legacy = runPreserve("restore", legacyDir);
+assert(legacy.config["x-hand-edit"] === undefined, "legacy unknown key is removed from openclaw.json");
+assert(legacy.extra["x-hand-edit"].note === "legacy-volume", "legacy unknown key is migrated into the sidecar");
+
+// Crash between snapshot and restore must not drop the key on the next start.
+const crashDir = fs.mkdtempSync(path.join(os.tmpdir(), "ocw-hand-crash-"));
+runPreserve("snapshot", crashDir, {
+  "x-hand-edit": { note: "survive-crash" },
+  gateway: { port: 18789 },
+});
+fs.writeFileSync(path.join(crashDir, "openclaw.json"), JSON.stringify({ gateway: { port: 18789 } }));
+runPreserve("snapshot", crashDir);
+fs.writeFileSync(path.join(crashDir, "openclaw.json"), JSON.stringify({ gateway: { port: 18789 } }));
+const crashed = runPreserve("restore", crashDir);
+assert(crashed.extra["x-hand-edit"].note === "survive-crash", "an unrestored stash is merged into the next snapshot");
+assert(crashed.config["x-hand-edit"] === undefined, "crash recovery still leaves openclaw.json schema-valid");
+
+// Unsafe keys are not parked.
+const unsafeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ocw-hand-unsafe-"));
+runPreserve("snapshot", unsafeDir, {
+  constructor: { admin: true },
+  gateway: { port: 18789 },
+});
+fs.writeFileSync(path.join(unsafeDir, "openclaw.json"), JSON.stringify({ gateway: { port: 18789 } }));
+const unsafe = runPreserve("restore", unsafeDir);
+assert(unsafe.extra === null, "unsafe top-level keys are not parked");
 
 // trustedProxies default, and a custom list is preserved.
 function runConfigure(extraEnv, custom) {
