@@ -199,23 +199,134 @@ Custom models belong in the mounted JSON file as `models.providers.ollama.models
 
 ### OpenAI-compatible endpoint (LiteLLM, vLLM, LM Studio, LocalAI)
 
-Any server that speaks the OpenAI chat-completions API. The provider id written to `openclaw.json` is `openai-compatible`.
+Any server that speaks the OpenAI chat-completions API (`POST /v1/chat/completions`). vLLM and LiteLLM both do. The provider id written to `openclaw.json` is `openai-compatible`, with `api` set to `openai-completions` when the provider is new. A saved `api` value is left in place.
 
 | Variable | Required | Description |
 |---|---|---|
-| `OPENAI_COMPATIBLE_BASE_URL` | yes | Base URL, for example `http://host.docker.internal:4000/v1`. Trailing slashes are stripped. There is no default — a missing URL does not fall back to `https://api.openai.com/v1`. |
-| `OPENAI_COMPATIBLE_MODEL` | yes | Model id, for example `my-model`. There is no default. Auto-selected primary model is `openai-compatible/<model>`. |
-| `OPENAI_COMPATIBLE_API_KEY` | no | API key when the server requires one. Omit it for local servers without auth (LM Studio, local vLLM). OpenClaw accepts a missing key when the base URL is loopback, a private LAN address, `*.local`, `host.docker.internal`, or a bare hostname. Public endpoints need a real key. |
+| `OPENAI_COMPATIBLE_BASE_URL` | yes | Base URL, including `/v1`, for example `http://vllm:8000/v1` or `http://litellm:4000/v1`. Trailing slashes are stripped. There is no default — a missing URL does not fall back to `https://api.openai.com/v1`. |
+| `OPENAI_COMPATIBLE_MODEL` | yes | Model id the server expects. vLLM: the served model name (`--served-model-name`, or the Hugging Face id). LiteLLM: the proxy `model_name`, not the upstream `provider/model` string. There is no default. Auto-selected primary model is `openai-compatible/<model>`. A slash inside the model id is kept. |
+| `OPENAI_COMPATIBLE_API_KEY` | no | API key when the server requires one. LiteLLM's master key goes here. Omit it for LM Studio or vLLM on loopback, a private LAN address, `*.local`, or `host.docker.internal`: OpenClaw synthesizes a local credential for those hosts. A bare Docker service name (`vllm`, `litellm`) is not in that set. When the key is omitted there, configure.js writes the non-secret placeholder `local-no-auth` so the gateway will call the server. vLLM ignores that value unless it was started with `--api-key`. Public endpoints need a real key. |
+| `OPENAI_COMPATIBLE_CONTEXT_WINDOW` | no | Positive integer token count for `OPENAI_COMPATIBLE_MODEL` (`models.providers["openai-compatible"].models[].contextWindow`). vLLM's `--max-model-len` is the matching value. Unset uses `128000` for a model this env var adds, and leaves an existing model's `contextWindow` unchanged. An invalid value is ignored with a warning. |
 
 Both `OPENAI_COMPATIBLE_BASE_URL` and `OPENAI_COMPATIBLE_MODEL` must be set. If either is missing, the provider is skipped and a warning is logged. The API key value is never written to the log.
 
-If a mounted custom JSON already defines `models.providers["openai-compatible"]`, these variables update `baseUrl`, set `apiKey` only when `OPENAI_COMPATIBLE_API_KEY` is present, and add `OPENAI_COMPATIBLE_MODEL` to `models` when that id is not already listed. Other models and provider fields (for example `api`, `timeoutSeconds`, headers) stay in place.
+If a mounted custom JSON already defines `models.providers["openai-compatible"]`, these variables update `baseUrl`, set `apiKey` only when `OPENAI_COMPATIBLE_API_KEY` is present, add `OPENAI_COMPATIBLE_MODEL` to `models` when that id is not already listed, and set that model's `contextWindow` only when `OPENAI_COMPATIBLE_CONTEXT_WINDOW` is set. Other models and provider fields (for example `api`, `timeoutSeconds`, headers, per-model `maxTokens`) stay in place. Use that list for the rest of a LiteLLM proxy's models, or for a second vLLM model with its own context window.
+
+#### vLLM
+
+`OPENAI_COMPATIBLE_MODEL` must match the id vLLM serves. Leave the API key unset when vLLM was started without `--api-key`. On a Docker service name, configure.js stores `local-no-auth` as `apiKey` because OpenClaw v2026.10.5 will not call a custom provider that has no key unless the host is loopback, a private IP, `*.local`, or `host.docker.internal`. Set the context window to `--max-model-len`.
+
+```bash
+docker run -d \
+  --name openclaw \
+  --network vllm-net \
+  -p 8080:8080 \
+  -e AUTH_PASSWORD=changeme \
+  -e OPENCLAW_GATEWAY_TOKEN=my-secret-token \
+  -e OPENCLAW_ALLOWED_ORIGINS=http://localhost:8080 \
+  -e OPENAI_COMPATIBLE_BASE_URL=http://vllm:8000/v1 \
+  -e OPENAI_COMPATIBLE_MODEL=Qwen/Qwen2.5-7B-Instruct \
+  -e OPENAI_COMPATIBLE_CONTEXT_WINDOW=32768 \
+  -v openclaw-data:/data \
+  coollabsio/openclaw:latest
+```
+
+vLLM on the same Docker network:
+
+```bash
+docker run -d \
+  --name vllm \
+  --network vllm-net \
+  --gpus all \
+  -v huggingface:/root/.cache/huggingface \
+  vllm/vllm-openai:latest \
+  --model Qwen/Qwen2.5-7B-Instruct \
+  --max-model-len 32768
+```
+
+If vLLM was started with `--api-key`, set that same value as `OPENAI_COMPATIBLE_API_KEY`.
+
+#### LiteLLM
+
+Point the base URL at the proxy's `/v1` root and the model at a `model_name` from the proxy config. The master key is `OPENAI_COMPATIBLE_API_KEY`. Other `model_name` entries belong in the mounted `models` array so each can keep its own context window.
+
+```bash
+docker run -d \
+  --name openclaw \
+  --network llm-net \
+  -p 8080:8080 \
+  -e AUTH_PASSWORD=changeme \
+  -e OPENCLAW_GATEWAY_TOKEN=my-secret-token \
+  -e OPENCLAW_ALLOWED_ORIGINS=http://localhost:8080 \
+  -e OPENAI_COMPATIBLE_BASE_URL=http://litellm:4000/v1 \
+  -e OPENAI_COMPATIBLE_API_KEY=sk-litellm-master-key \
+  -e OPENAI_COMPATIBLE_MODEL=gpt-4o-mini \
+  -e OPENAI_COMPATIBLE_CONTEXT_WINDOW=128000 \
+  -v openclaw-data:/data \
+  -v "$PWD/litellm-models.json:/app/config/openclaw.json:ro" \
+  coollabsio/openclaw:latest
+```
+
+`litellm-models.json` adds the proxy's other model without replacing the env model:
+
+```json
+{
+  "models": {
+    "providers": {
+      "openai-compatible": {
+        "models": [
+          { "id": "claude-sonnet", "name": "Claude Sonnet", "contextWindow": 200000 }
+        ]
+      }
+    }
+  }
+}
+```
+
+LiteLLM proxy config (`config.yaml`) for that pair of names:
+
+```yaml
+model_list:
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+  - model_name: claude-sonnet
+    litellm_params:
+      model: anthropic/claude-sonnet-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+general_settings:
+  master_key: sk-litellm-master-key
+```
+
+```bash
+docker run -d \
+  --name litellm \
+  --network llm-net \
+  -e OPENAI_API_KEY \
+  -e ANTHROPIC_API_KEY \
+  -v "$PWD/config.yaml:/app/config.yaml:ro" \
+  docker.litellm.ai/berriai/litellm:main-latest \
+  --config /app/config.yaml --port 4000
+```
 
 ### Model selection
 
 | Variable | Description |
 |---|---|
 | `OPENCLAW_PRIMARY_MODEL` | Override auto-selected primary model. Format: `provider/model-id` (e.g. `anthropic/claude-sonnet-4-5-20250929`). |
+
+### Memory backend (optional)
+
+OpenClaw v2026.10.5 removed `memory.backend` and the QMD engine. `openclaw doctor` deletes `memory.backend` and `memory.qmd`. The engine is selected with `plugins.slots.memory`. When that key is absent, the builtin SQLite engine (`memory-core`) is the default. `none` turns memory plugins off.
+
+| Variable | Description |
+|---|---|
+| `OPENCLAW_MEMORY_BACKEND` | Value written to `plugins.slots.memory`. `memory-core` is the builtin engine (`builtin` is accepted as an alias). `memory-lancedb` selects the LanceDB plugin. `openclaw-honcho` selects Honcho (install `@honcho-ai/openclaw-honcho` first). `none` disables the slot. Any other non-empty string is written as a plugin id. Unset leaves a value already in the config, or the default, alone. |
+
+`qmd` is not written. It logs a warning and leaves the current slot unchanged, because that backend is no longer in the schema.
+
+LanceDB and Honcho still need their own plugin config (`plugins.entries.<id>.config`). That object is JSON-only; this variable only selects the slot.
 
 ### HTTP Basic Auth (recommended)
 

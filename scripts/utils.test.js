@@ -31,7 +31,10 @@ const {
   ollamaPrimaryModel,
   reconcileStaleOllamaPrimary,
   OPENAI_COMPATIBLE_PROVIDER_ID,
+  DEFAULT_OPENAI_COMPATIBLE_CONTEXT_WINDOW,
+  OPENAI_COMPATIBLE_BARE_HOST_API_KEY,
   resolveOpenAICompatibleProvider,
+  resolveMemoryBackend,
   COMPOSE_BROWSER_SIDECAR_HOSTNAME,
   cdpUrlHostname,
   browserCdpUrls,
@@ -761,7 +764,6 @@ function providerResult(input) {
     'http://192.168.1.20:8000/v1',
     'http://10.1.2.3/v1',
     'http://172.16.0.5/v1',
-    'http://vllm:8000/v1',
     'http://lmstudio.local:1234/v1',
     'http://[::1]:8000/v1',
   ];
@@ -851,6 +853,177 @@ function providerResult(input) {
     model: 'm',
   });
   assert(typeof result.warning === 'string', '172.15 is not treated as private LAN');
+}
+
+{
+  const result = providerResult({
+    baseUrl: 'http://vllm:8000/v1/',
+    model: 'Qwen/Qwen2.5-7B-Instruct',
+    contextWindow: '32768',
+  });
+  eq(result.action, 'apply', 'vLLM base URL and served model apply without a key');
+  eq(result.provider.baseUrl, 'http://vllm:8000/v1', 'vLLM trailing slash is stripped');
+  eq(result.provider.api, 'openai-completions', 'vLLM uses the chat-completions adapter');
+  eq(result.provider.apiKey, OPENAI_COMPATIBLE_BARE_HOST_API_KEY, 'bare vLLM hostname gets the non-secret placeholder key');
+  eq(result.provider.models, [
+    { id: 'Qwen/Qwen2.5-7B-Instruct', name: 'Qwen/Qwen2.5-7B-Instruct', contextWindow: 32768 },
+  ], 'vLLM model keeps the slash and the env context window');
+  eq(result.modelRef, 'openai-compatible/Qwen/Qwen2.5-7B-Instruct', 'vLLM model ref keeps the model id');
+  assert(result.warning === undefined, 'bare vLLM hostname does not warn');
+}
+
+{
+  const result = providerResult({
+    baseUrl: 'http://vllm:8000/v1',
+    model: 'm',
+    existing: { apiKey: 'mounted-key', models: [{ id: 'm', name: 'm', contextWindow: 8192 }] },
+  });
+  eq(result.provider.apiKey, 'mounted-key', 'bare hostname keeps a mounted key when the env key is unset');
+}
+
+{
+  const result = providerResult({
+    apiKey: SECRET,
+    baseUrl: 'http://litellm:4000/v1',
+    model: 'gpt-4o-mini',
+    contextWindow: '  128000  ',
+  });
+  eq(result.action, 'apply', 'LiteLLM proxy with a master key applies');
+  eq(result.provider.apiKey, SECRET, 'LiteLLM master key is stored');
+  eq(result.provider.models[0].id, 'gpt-4o-mini', 'LiteLLM model_name is the model id');
+  eq(result.provider.models[0].contextWindow, 128000, 'LiteLLM context window is trimmed');
+  assert(result.warning === undefined, 'LiteLLM with a key does not warn');
+}
+
+{
+  const existing = {
+    api: 'openai-completions',
+    baseUrl: 'http://old.example/v1',
+    models: [
+      { id: 'kept-model', name: 'Kept', contextWindow: 4096, maxTokens: 1024 },
+      { id: 'Qwen/Qwen2.5-7B-Instruct', name: 'Qwen', contextWindow: 8192 },
+    ],
+  };
+  const result = providerResult({
+    baseUrl: 'http://vllm:8000/v1',
+    model: 'Qwen/Qwen2.5-7B-Instruct',
+    contextWindow: '32768',
+    existing,
+  });
+  eq(result.provider.models[0], { id: 'kept-model', name: 'Kept', contextWindow: 4096, maxTokens: 1024 }, 'context window env does not rewrite other models');
+  eq(result.provider.models[1], {
+    id: 'Qwen/Qwen2.5-7B-Instruct',
+    name: 'Qwen',
+    contextWindow: 32768,
+  }, 'context window env overrides only the named model');
+  eq(existing.models[1].contextWindow, 8192, 'existing model object is not mutated');
+}
+
+{
+  const result = providerResult({
+    baseUrl: 'http://vllm:8000/v1',
+    model: 'llama',
+    contextWindow: '8k',
+    existing: {
+      models: [{ id: 'llama', name: 'Llama', contextWindow: 8192 }],
+    },
+  });
+  eq(result.action, 'apply', 'invalid context window still applies the provider');
+  eq(result.provider.models[0].contextWindow, 8192, 'invalid context window leaves the existing model window');
+  assert(result.warning.includes('OPENAI_COMPATIBLE_CONTEXT_WINDOW'), 'invalid context window is named in the warning');
+  assert(result.warning.includes('positive integer'), 'invalid context window warning asks for a positive integer');
+}
+
+{
+  const result = providerResult({
+    baseUrl: 'http://vllm:8000/v1',
+    model: 'llama',
+    contextWindow: '0',
+  });
+  eq(result.provider.models[0].contextWindow, DEFAULT_OPENAI_COMPATIBLE_CONTEXT_WINDOW, 'zero context window falls back to the default on a new model');
+  assert(result.warning.includes('OPENAI_COMPATIBLE_CONTEXT_WINDOW'), 'zero context window warns');
+}
+
+{
+  const result = providerResult({
+    baseUrl: 'http://vllm:8000/v1',
+    model: 'llama',
+    contextWindow: '   ',
+  });
+  eq(result.provider.models[0].contextWindow, DEFAULT_OPENAI_COMPATIBLE_CONTEXT_WINDOW, 'blank context window uses the new-model default');
+  assert(result.warning === undefined, 'blank context window is treated as unset');
+}
+
+{
+  const result = providerResult({ contextWindow: '32768' });
+  eq(result.action, 'incomplete', 'context window alone does not enable the provider');
+  assert(result.warning.includes('OPENAI_COMPATIBLE_BASE_URL'), 'context-window-only warning names the base URL');
+  assert(result.warning.includes('OPENAI_COMPATIBLE_MODEL'), 'context-window-only warning names the model');
+  assert(!result.provider, 'context-window-only result has no provider');
+}
+
+{
+  const result = providerResult({ contextWindow: 'nope' });
+  eq(result.action, 'incomplete', 'an invalid context window with nothing else is incomplete');
+  assert(result.warning.includes('positive integer'), 'invalid context window alone explains the expected type');
+}
+
+console.log('resolveMemoryBackend');
+
+{
+  const result = resolveMemoryBackend(undefined);
+  eq(result.action, 'absent', 'unset memory backend leaves the slot alone');
+  assert(result.slot === undefined, 'unset memory backend has no slot');
+  assert(result.warning === undefined, 'unset memory backend does not warn');
+}
+
+{
+  const result = resolveMemoryBackend('   ');
+  eq(result.action, 'absent', 'blank memory backend leaves the slot alone');
+}
+
+{
+  const result = resolveMemoryBackend('memory-core');
+  eq(result, { action: 'apply', slot: 'memory-core' }, 'memory-core selects the builtin slot');
+}
+
+{
+  const result = resolveMemoryBackend('builtin');
+  eq(result, { action: 'apply', slot: 'memory-core' }, 'builtin is the old name for memory-core');
+}
+
+{
+  const result = resolveMemoryBackend('NONE');
+  eq(result, { action: 'apply', slot: 'none' }, 'none disables the memory slot');
+}
+
+{
+  const result = resolveMemoryBackend('memory-lancedb');
+  eq(result, { action: 'apply', slot: 'memory-lancedb' }, 'memory-lancedb is passed through');
+}
+
+{
+  const result = resolveMemoryBackend(' openclaw-honcho ');
+  eq(result, { action: 'apply', slot: 'openclaw-honcho' }, 'honcho plugin id is trimmed');
+}
+
+{
+  const result = resolveMemoryBackend('my-memory');
+  eq(result, { action: 'apply', slot: 'my-memory' }, 'an unknown plugin id is passed through');
+}
+
+{
+  const result = resolveMemoryBackend('qmd');
+  eq(result.action, 'rejected', 'qmd is rejected');
+  assert(result.slot === undefined, 'qmd does not produce a slot');
+  assert(result.warning.includes('memory.backend'), 'qmd warning names the retired key');
+  assert(result.warning.includes('plugins.slots.memory'), 'qmd warning names the current key');
+  assert(result.warning.includes('memory-core'), 'qmd warning names the builtin plugin');
+}
+
+{
+  const result = resolveMemoryBackend('QMD');
+  eq(result.action, 'rejected', 'QMD is rejected regardless of case');
 }
 
 // configure.js must call the helper. These spawn the script instead of copying its logic.
@@ -950,6 +1123,117 @@ function runOpenAICompatibleConfigure(env, customConfig) {
   assert(run.output.includes('OPENAI_COMPATIBLE_API_KEY'), 'configure.js warns when a public URL has no key');
   assert(run.written.models.providers['openai-compatible'].apiKey === undefined, 'public provider is written without a key');
   eq(run.written.agents.defaults.model.primary, 'anthropic/claude-opus-4-5-20251101', 'Anthropic stays ahead of the custom provider');
+}
+
+{
+  const run = runOpenAICompatibleConfigure({
+    OPENAI_COMPATIBLE_BASE_URL: 'http://vllm:8000/v1',
+    OPENAI_COMPATIBLE_MODEL: 'Qwen/Qwen2.5-7B-Instruct',
+    OPENAI_COMPATIBLE_CONTEXT_WINDOW: '32768',
+  });
+  eq(run.status, 0, 'configure.js accepts a vLLM endpoint');
+  const provider = run.written.models.providers['openai-compatible'];
+  eq(provider.api, 'openai-completions', 'configure.js writes openai-completions for vLLM');
+  eq(provider.baseUrl, 'http://vllm:8000/v1', 'configure.js writes the vLLM base URL');
+  eq(provider.apiKey, OPENAI_COMPATIBLE_BARE_HOST_API_KEY, 'configure.js writes the bare-host placeholder key');
+  eq(provider.models[0], {
+    id: 'Qwen/Qwen2.5-7B-Instruct',
+    name: 'Qwen/Qwen2.5-7B-Instruct',
+    contextWindow: 32768,
+  }, 'configure.js writes the vLLM context window');
+  eq(run.written.agents.defaults.model.primary, 'openai-compatible/Qwen/Qwen2.5-7B-Instruct', 'configure.js selects the vLLM model');
+  assert(run.written.memory === undefined, 'vLLM config does not write the retired memory.backend key');
+}
+
+{
+  const run = runOpenAICompatibleConfigure({
+    OPENAI_COMPATIBLE_API_KEY: SECRET,
+    OPENAI_COMPATIBLE_BASE_URL: 'http://litellm:4000/v1/',
+    OPENAI_COMPATIBLE_MODEL: 'gpt-4o-mini',
+    OPENAI_COMPATIBLE_CONTEXT_WINDOW: 'nope',
+  }, {
+    models: {
+      providers: {
+        'openai-compatible': {
+          api: 'openai-completions',
+          baseUrl: 'http://old.example/v1',
+          models: [
+            { id: 'claude-sonnet', name: 'Claude', contextWindow: 200000 },
+            { id: 'gpt-4o-mini', name: 'GPT-4o mini', contextWindow: 128000 },
+          ],
+        },
+      },
+    },
+  });
+  eq(run.status, 0, 'configure.js accepts a LiteLLM proxy');
+  const provider = run.written.models.providers['openai-compatible'];
+  eq(provider.baseUrl, 'http://litellm:4000/v1', 'configure.js writes the LiteLLM base URL');
+  eq(provider.apiKey, SECRET, 'configure.js writes the LiteLLM master key');
+  eq(provider.models.map((model) => model.id), ['claude-sonnet', 'gpt-4o-mini'], 'configure.js keeps the extra LiteLLM model');
+  eq(provider.models[0].contextWindow, 200000, 'configure.js leaves the extra model context window');
+  eq(provider.models[1].contextWindow, 128000, 'invalid context window does not replace the LiteLLM model window');
+  assert(run.output.includes('OPENAI_COMPATIBLE_CONTEXT_WINDOW'), 'configure.js warns on a bad context window');
+  assert(!run.output.includes(SECRET), 'configure.js does not log the LiteLLM key');
+}
+
+console.log('configure.js memory slot');
+
+{
+  const run = runOpenAICompatibleConfigure({
+    ANTHROPIC_API_KEY: 'test-key',
+  });
+  eq(run.status, 0, 'configure.js succeeds without a memory backend');
+  assert(run.written.plugins === undefined, 'unset memory backend does not write plugins');
+  assert(run.written.memory === undefined, 'unset memory backend does not write memory.backend');
+}
+
+{
+  const run = runOpenAICompatibleConfigure({
+    ANTHROPIC_API_KEY: 'test-key',
+    OPENCLAW_MEMORY_BACKEND: 'memory-core',
+  }, {
+    plugins: {
+      slots: { contextEngine: 'legacy' },
+      entries: { 'memory-wiki': { enabled: true } },
+    },
+    memory: { citations: 'on' },
+  });
+  eq(run.status, 0, 'configure.js accepts memory-core');
+  eq(run.written.plugins.slots.memory, 'memory-core', 'configure.js writes plugins.slots.memory');
+  eq(run.written.plugins.slots.contextEngine, 'legacy', 'configure.js keeps the other slot');
+  eq(run.written.plugins.entries['memory-wiki'], { enabled: true }, 'configure.js keeps plugin entries');
+  eq(run.written.memory, { citations: 'on' }, 'configure.js does not replace memory.search settings');
+  assert(run.written.memory.backend === undefined, 'configure.js does not write memory.backend');
+}
+
+{
+  const run = runOpenAICompatibleConfigure({
+    ANTHROPIC_API_KEY: 'test-key',
+    OPENCLAW_MEMORY_BACKEND: 'builtin',
+  });
+  eq(run.written.plugins.slots.memory, 'memory-core', 'builtin maps to memory-core');
+}
+
+{
+  const run = runOpenAICompatibleConfigure({
+    ANTHROPIC_API_KEY: 'test-key',
+    OPENCLAW_MEMORY_BACKEND: 'none',
+  });
+  eq(run.written.plugins.slots.memory, 'none', 'none is written as the memory slot');
+}
+
+{
+  const run = runOpenAICompatibleConfigure({
+    ANTHROPIC_API_KEY: 'test-key',
+    OPENCLAW_MEMORY_BACKEND: 'qmd',
+  }, {
+    plugins: { slots: { memory: 'memory-lancedb' } },
+  });
+  eq(run.status, 0, 'retired qmd does not fail configure.js');
+  eq(run.written.plugins.slots.memory, 'memory-lancedb', 'qmd leaves the existing memory slot');
+  assert(run.written.memory === undefined || run.written.memory.backend === undefined, 'qmd does not write memory.backend');
+  assert(run.output.includes('retired'), 'qmd warning says the backend is retired');
+  assert(run.output.includes('plugins.slots.memory'), 'qmd warning names the current key');
 }
 
 // The entrypoint gate must use the helper, not a warning that always names both.

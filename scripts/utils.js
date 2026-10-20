@@ -167,12 +167,28 @@ function coolifyAllowedOrigins(coolifyUrl, coolifyFqdn) {
 // There is no default URL or model: a key alone must not be sent to
 // https://api.openai.com/v1.
 //
-// OPENAI_COMPATIBLE_API_KEY is optional. OpenClaw synthesizes a non-secret
-// local credential when apiKey is omitted and baseUrl is loopback, a private
-// LAN address, *.local, host.docker.internal, or a bare hostname (LM Studio,
-// local vLLM). Public endpoints still need a real key.
+// OPENAI_COMPATIBLE_API_KEY is optional. OpenClaw v2026.10.5 synthesizes a
+// non-secret local credential when apiKey is omitted and baseUrl is loopback,
+// an RFC1918 address, *.local, or host.docker.internal (LM Studio, vLLM on
+// the host). A bare Docker service name such as `vllm` is not in that set:
+// the gateway then reports missing-provider-auth and will not call the model.
+// Those hosts get the literal placeholder below. Public endpoints and LiteLLM
+// still need a real key.
+//
+// OPENAI_COMPATIBLE_CONTEXT_WINDOW is optional. A positive integer overrides
+// contextWindow on the env model. Unset keeps 128000 for a new model and
+// leaves an existing model's contextWindow alone.
+//
+// vLLM and LiteLLM both speak POST /v1/chat/completions, so this provider
+// (api: openai-completions) is their config. Extra model rows stay in the
+// mounted JSON; they are not replaced.
 
 const OPENAI_COMPATIBLE_PROVIDER_ID = 'openai-compatible';
+const DEFAULT_OPENAI_COMPATIBLE_CONTEXT_WINDOW = 128000;
+// Not a secret. vLLM ignores it unless the server was started with --api-key.
+// Must not be OpenClaw's `custom-local` marker: that marker is ignored unless
+// the base URL is already in OpenClaw's local-host set.
+const OPENAI_COMPATIBLE_BARE_HOST_API_KEY = 'local-no-auth';
 
 function trimmedEnv(value) {
   return typeof value === 'string' ? value.trim() : '';
@@ -191,9 +207,31 @@ function isPrivateIpv4Host(host) {
 }
 
 /**
- * True when OpenClaw will accept a custom provider with no apiKey.
- * Mirrors the local-base-URL check used by OpenClaw's synthetic local auth,
- * plus bare hostnames (Docker service names such as `vllm`).
+ * True for a single-label hostname such as `vllm` or `litellm`.
+ * OpenClaw does not treat these as local when deciding to synthesize auth.
+ * @param {string} baseUrl
+ * @returns {boolean}
+ */
+function isBareDockerHostname(baseUrl) {
+  try {
+    let host = new URL(baseUrl).hostname.toLowerCase();
+    if (host.startsWith('[') && host.endsWith(']')) {
+      host = host.slice(1, -1);
+    }
+    // localhost and 0.0.0.0 are single-label but OpenClaw already synthesizes
+    // auth for them. Only other single-label names need the placeholder.
+    if (host === 'localhost' || host === '0.0.0.0') return false;
+    return host.length > 0 && !host.includes('.') && !host.includes(':');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True when a missing API key should not warn.
+ * OpenClaw synthesizes auth for loopback, RFC1918, *.local, and the Docker
+ * host aliases. Bare service names are included here too because they receive
+ * OPENAI_COMPATIBLE_BARE_HOST_API_KEY instead of a warning.
  * @param {string} baseUrl
  * @returns {boolean}
  */
@@ -223,10 +261,42 @@ function isLocalOpenAICompatibleBaseUrl(baseUrl) {
 }
 
 /**
+ * OPENAI_COMPATIBLE_CONTEXT_WINDOW. Unset (including blank) stays unset.
+ * A positive integer is applied. Anything else is invalid and must not be
+ * written — the schema requires contextWindow to be a positive number.
+ * @param {unknown} value
+ * @returns {{ state: 'unset' | 'ok' | 'invalid', value?: number }}
+ */
+function parseOpenAICompatibleContextWindow(value) {
+  if (value == null) return { state: 'unset' };
+  if (typeof value === 'number') {
+    if (Number.isSafeInteger(value) && value > 0) return { state: 'ok', value };
+    return { state: 'invalid' };
+  }
+  if (typeof value !== 'string') return { state: 'invalid' };
+  const text = value.trim();
+  if (!text) return { state: 'unset' };
+  if (!/^[1-9]\d*$/.test(text)) return { state: 'invalid' };
+  const parsed = Number(text);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) return { state: 'invalid' };
+  return { state: 'ok', value: parsed };
+}
+
+/**
  * Build the `models.providers["openai-compatible"]` entry from env values.
  * Pure: does not read process.env and does not log.
  *
- * @param {{ apiKey?: string, baseUrl?: string, model?: string, existing?: object }} input
+ * vLLM and LiteLLM use this same entry. Point baseUrl at their `/v1` root
+ * and model at the id the server expects (vLLM served-model name, or the
+ * LiteLLM `model_name`).
+ *
+ * @param {{
+ *   apiKey?: string,
+ *   baseUrl?: string,
+ *   model?: string,
+ *   contextWindow?: string | number,
+ *   existing?: object,
+ * }} input
  * @returns {{
  *   action: 'absent' | 'incomplete' | 'apply',
  *   providerId: string,
@@ -241,8 +311,9 @@ function resolveOpenAICompatibleProvider(input) {
   const baseUrl = trimmedEnv(source.baseUrl).replace(/\/+$/, '');
   const modelId = trimmedEnv(source.model);
   const providerId = OPENAI_COMPATIBLE_PROVIDER_ID;
+  const context = parseOpenAICompatibleContextWindow(source.contextWindow);
 
-  if (!apiKey && !baseUrl && !modelId) {
+  if (!apiKey && !baseUrl && !modelId && context.state === 'unset') {
     return { action: 'absent', providerId, modelRef: '' };
   }
 
@@ -251,14 +322,21 @@ function resolveOpenAICompatibleProvider(input) {
   if (!modelId) missing.push('OPENAI_COMPATIBLE_MODEL');
   if (missing.length > 0) {
     const noun = missing.length === 1 ? 'is' : 'are';
+    const warningParts = [
+      '[configure] WARNING: skipping OpenAI-compatible provider — ' +
+        `${missing.join(' and ')} ${noun} required. ` +
+        'OPENAI_COMPATIBLE_API_KEY is optional for local servers without auth.',
+    ];
+    if (context.state === 'invalid') {
+      warningParts.push(
+        'OPENAI_COMPATIBLE_CONTEXT_WINDOW was ignored because it is not a positive integer.',
+      );
+    }
     return {
       action: 'incomplete',
       providerId,
       modelRef: '',
-      warning:
-        '[configure] WARNING: skipping OpenAI-compatible provider — ' +
-        `${missing.join(' and ')} ${noun} required. ` +
-        'OPENAI_COMPATIBLE_API_KEY is optional for local servers without auth.',
+      warning: warningParts.join(' '),
     };
   }
 
@@ -273,15 +351,22 @@ function resolveOpenAICompatibleProvider(input) {
   provider.baseUrl = baseUrl;
   if (apiKey) {
     provider.apiKey = apiKey;
+  } else if (!trimmedEnv(provider.apiKey) && isBareDockerHostname(baseUrl)) {
+    provider.apiKey = OPENAI_COMPATIBLE_BARE_HOST_API_KEY;
   }
 
-  const modelEntry = { id: modelId, name: modelId, contextWindow: 128000 };
+  const contextWindow =
+    context.state === 'ok' ? context.value : DEFAULT_OPENAI_COMPATIBLE_CONTEXT_WINDOW;
+  const modelEntry = { id: modelId, name: modelId, contextWindow };
   if (Array.isArray(provider.models)) {
     const models = provider.models.map((model) =>
       model && typeof model === 'object' ? { ...model } : model
     );
-    if (!models.some((model) => model && model.id === modelId)) {
+    const existingIndex = models.findIndex((model) => model && model.id === modelId);
+    if (existingIndex === -1) {
       models.push(modelEntry);
+    } else if (context.state === 'ok' && models[existingIndex] && typeof models[existingIndex] === 'object') {
+      models[existingIndex] = { ...models[existingIndex], contextWindow: context.value };
     }
     provider.models = models;
   } else {
@@ -291,13 +376,20 @@ function resolveOpenAICompatibleProvider(input) {
   const hasKey =
     apiKey !== '' ||
     (provider.apiKey != null && String(provider.apiKey).trim() !== '');
-  let warning;
+  const warnings = [];
+  if (context.state === 'invalid') {
+    warnings.push(
+      '[configure] WARNING: ignoring OPENAI_COMPATIBLE_CONTEXT_WINDOW — expected a positive integer token count. ' +
+        'A new model keeps the 128000 default; an existing model keeps its contextWindow.',
+    );
+  }
   if (!hasKey && !isLocalOpenAICompatibleBaseUrl(baseUrl)) {
-    warning =
+    warnings.push(
       '[configure] WARNING: OpenAI-compatible provider has no API key. ' +
-      'Public endpoints need OPENAI_COMPATIBLE_API_KEY. ' +
-      'Local servers (LM Studio, local vLLM) can omit it when the base URL is ' +
-      'loopback, a private LAN address, *.local, host.docker.internal, or a bare hostname.';
+        'Public endpoints need OPENAI_COMPATIBLE_API_KEY. ' +
+        'Local servers (LM Studio, vLLM on the host) can omit it when the base URL is ' +
+        'loopback, a private LAN address, *.local, or host.docker.internal.',
+    );
   }
 
   return {
@@ -305,8 +397,57 @@ function resolveOpenAICompatibleProvider(input) {
     providerId,
     modelRef: `${providerId}/${modelId}`,
     provider,
-    warning,
+    warning: warnings.length > 0 ? warnings.join(' ') : undefined,
   };
+}
+
+// ── Memory slot ─────────────────────────────────────────────────────────────
+//
+// OpenClaw v2026.10.5 removed memory.backend and the QMD engine. Doctor
+// deletes memory.backend / memory.qmd and reports that builtin memory is the
+// only built-in engine. The schema key that selects an engine is
+// plugins.slots.memory (free string). "none" disables memory plugins. Unset
+// leaves the implicit default, memory-core.
+// https://github.com/openclaw/openclaw/blob/v2026.10.5/src/config/zod-schema.root-shape.ts
+
+const MEMORY_SLOT_BUILTIN = 'memory-core';
+const RETIRED_MEMORY_BACKENDS = new Set(['qmd']);
+
+/**
+ * Map OPENCLAW_MEMORY_BACKEND onto plugins.slots.memory.
+ * Pure: does not read process.env and does not log.
+ *
+ * @param {unknown} value
+ * @returns {{
+ *   action: 'absent' | 'apply' | 'rejected',
+ *   slot?: string,
+ *   warning?: string,
+ * }}
+ */
+function resolveMemoryBackend(value) {
+  const raw = trimmedEnv(value);
+  if (!raw) return { action: 'absent' };
+
+  const folded = raw.toLowerCase();
+  if (RETIRED_MEMORY_BACKENDS.has(folded)) {
+    return {
+      action: 'rejected',
+      warning:
+        '[configure] WARNING: OPENCLAW_MEMORY_BACKEND=qmd is retired in OpenClaw v2026.10.5. ' +
+        'memory.backend and the QMD engine were removed; builtin memory is the only built-in engine. ' +
+        'Set OPENCLAW_MEMORY_BACKEND to a plugins.slots.memory plugin id ' +
+        '(memory-core, memory-lancedb, openclaw-honcho) or none. ' +
+        'The existing memory slot was left unchanged.',
+    };
+  }
+
+  if (folded === 'builtin') {
+    return { action: 'apply', slot: MEMORY_SLOT_BUILTIN };
+  }
+  if (folded === 'none') {
+    return { action: 'apply', slot: 'none' };
+  }
+  return { action: 'apply', slot: raw };
 }
 
 // ── Ollama provider ─────────────────────────────────────────────────────────
@@ -757,7 +898,10 @@ module.exports = {
   ollamaPrimaryModel,
   reconcileStaleOllamaPrimary,
   OPENAI_COMPATIBLE_PROVIDER_ID,
+  DEFAULT_OPENAI_COMPATIBLE_CONTEXT_WINDOW,
+  OPENAI_COMPATIBLE_BARE_HOST_API_KEY,
   resolveOpenAICompatibleProvider,
+  resolveMemoryBackend,
   COMPOSE_BROWSER_SIDECAR_HOSTNAME,
   cdpUrlHostname,
   browserCdpUrls,
