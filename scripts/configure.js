@@ -27,6 +27,8 @@ const {
   resolveOpenAICompatibleProvider,
   resolveMemoryBackend,
   resolveComposeBrowserSidecarSsrF,
+  classifyGatewayToken,
+  gatewayTokenError,
 } = require('./utils');
 
 const STATE_DIR = (process.env.OPENCLAW_STATE_DIR || "/data/.openclaw").replace(/\/+$/, "");
@@ -112,12 +114,22 @@ if (!config.gateway.mode) {
   config.gateway.mode = "local";
 }
 
-// Gateway token: required via OPENCLAW_GATEWAY_TOKEN env var (enforced by entrypoint.sh)
-const token = (process.env.OPENCLAW_GATEWAY_TOKEN || "").trim();
-if (token) {
+// Gateway token. entrypoint.sh rejects an empty value and anything outside
+// ^[A-Za-z0-9._~-]+$ before nginx config is generated. The same charset check
+// runs here so a direct `node configure.js` cannot write a token that nginx
+// would interpolate into double quotes. JSON.stringify is not that path: the
+// nginx config reads the env var, not this file. Unset or empty stays
+// optional in this script; the entrypoint is what requires the variable.
+// The token value is never logged.
+const gatewayToken = process.env.OPENCLAW_GATEWAY_TOKEN;
+if (typeof gatewayToken === "string" && gatewayToken.length > 0) {
+  if (classifyGatewayToken(gatewayToken) !== "ok") {
+    console.error(gatewayTokenError("invalid", "[configure]"));
+    process.exit(EXIT_CODE.INVALID_CONFIG);
+  }
   ensure(config, "gateway", "auth");
   config.gateway.auth.mode = "token";
-  config.gateway.auth.token = token;
+  config.gateway.auth.token = gatewayToken;
 }
 
 // OpenClaw 2026.10.5 rejects gateway.controlUi.allowInsecureAuth (doctor

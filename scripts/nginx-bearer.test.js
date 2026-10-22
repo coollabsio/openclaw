@@ -246,6 +246,39 @@ if (noAuthNorm !== mainNoAuthNorm) {
 }
 
 const entrypointSource = fs.readFileSync(ENTRYPOINT, "utf8");
+const gatewayTokenGate = entrypointSource.indexOf("# >>> gateway-token-gate");
+const gatewayTokenGateEnd = entrypointSource.indexOf("# <<< gateway-token-gate");
+const nginxConfigStart = entrypointSource.indexOf("# ── Generate nginx config");
+assert(
+  gatewayTokenGate > 0 && gatewayTokenGateEnd > gatewayTokenGate && gatewayTokenGateEnd < nginxConfigStart,
+  "gateway token charset is validated before nginx config is generated",
+);
+assert(
+  entrypointSource.slice(gatewayTokenGate, gatewayTokenGateEnd).includes("^[A-Za-z0-9._~-]+$"),
+  "entrypoint validates OPENCLAW_GATEWAY_TOKEN against the unreserved charset",
+);
+const nginxSectionSource = entrypointSource.slice(
+  nginxConfigStart,
+  entrypointSource.indexOf("# ── Start nginx"),
+);
+assert(
+  (nginxSectionSource.match(/\$\{GATEWAY_TOKEN\}/g) || []).length === 6,
+  "all six nginx gateway-token insertions are in the generated config section",
+);
+assert(
+  !entrypointSource.replace(nginxSectionSource, "").includes("${GATEWAY_TOKEN}"),
+  "the gateway token is not interpolated outside the nginx section",
+);
+const healthzSource = nginxSectionSource.slice(
+  nginxSectionSource.indexOf("location = /healthz"),
+  nginxSectionSource.indexOf("location @healthz_fallback"),
+);
+assert(!healthzSource.includes("GATEWAY_TOKEN"), "/healthz does not interpolate the gateway token");
+assert(
+  nginxSectionSource.includes("Bearer ${GATEWAY_TOKEN}") &&
+    nginxSectionSource.includes("token=${GATEWAY_TOKEN}"),
+  "bearer and token= query sites are inside the validated nginx section",
+);
 assert(
   entrypointSource.includes("openclaw doctor --fix"),
   "entrypoint still runs doctor --fix so upgrades keep migrating",
