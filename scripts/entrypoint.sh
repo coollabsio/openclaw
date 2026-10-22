@@ -1,6 +1,28 @@
 #!/usr/bin/env bash
 set -e
 
+# >>> gateway-token-gate
+# nginx copies this value into double-quoted strings (the Bearer header and the
+# token= query) when it writes openclaw.conf. A quote, backslash, dollar,
+# semicolon, brace, or space breaks that config and nginx exits with an
+# "unexpected" error that does not name the token. Reject anything outside
+# ^[A-Za-z0-9._~-]+$ before the config is generated and before volume setup.
+# openssl rand -hex 32 matches. Nothing in this image generates a token.
+if [ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
+  echo "[entrypoint] ERROR: OPENCLAW_GATEWAY_TOKEN is required."
+  echo "[entrypoint] Allowed characters: A-Z, a-z, 0-9, and . _ ~ -"
+  echo "[entrypoint] Generate one with: openssl rand -hex 32"
+  exit 1
+fi
+if ! [[ "${OPENCLAW_GATEWAY_TOKEN}" =~ ^[A-Za-z0-9._~-]+$ ]]; then
+  echo "[entrypoint] ERROR: OPENCLAW_GATEWAY_TOKEN contains characters that are not allowed."
+  echo "[entrypoint] Allowed characters: A-Z, a-z, 0-9, and . _ ~ -"
+  echo "[entrypoint] Generate one with: openssl rand -hex 32"
+  exit 1
+fi
+GATEWAY_TOKEN="$OPENCLAW_GATEWAY_TOKEN"
+# <<< gateway-token-gate
+
 STATE_DIR="${OPENCLAW_STATE_DIR:-/data/.openclaw}"
 WORKSPACE_DIR="${OPENCLAW_WORKSPACE_DIR:-/data/workspace}"
 GATEWAY_PORT="${OPENCLAW_GATEWAY_PORT:-18789}"
@@ -97,14 +119,6 @@ if [ -n "${OPENCLAW_DOCKER_APT_PACKAGES:-}" ]; then
       $OPENCLAW_DOCKER_APT_PACKAGES \
     && rm -rf /var/lib/apt/lists/*
 fi
-
-# ── Require OPENCLAW_GATEWAY_TOKEN ───────────────────────────────────────────
-if [ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
-  echo "[entrypoint] ERROR: OPENCLAW_GATEWAY_TOKEN is required."
-  echo "[entrypoint] Generate one with: openssl rand -hex 32"
-  exit 1
-fi
-GATEWAY_TOKEN="$OPENCLAW_GATEWAY_TOKEN"
 
 # ── Require at least one AI provider API key env var ─────────────────────────
 # Providers always read API keys from env vars, never from JSON config.

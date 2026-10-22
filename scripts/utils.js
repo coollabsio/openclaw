@@ -876,6 +876,45 @@ function resolveComposeBrowserSidecarSsrF(browserConfig, optOutValue) {
   return { action: 'allow', ssrfPolicy: next };
 }
 
+// ── Gateway token charset ───────────────────────────────────────────────────
+//
+// entrypoint.sh interpolates OPENCLAW_GATEWAY_TOKEN into double-quoted nginx
+// strings (Authorization Bearer and token=). The same check runs here so
+// configure.js cannot persist a value the entrypoint would reject, and so the
+// pattern has one definition the entrypoint test compares against the shell
+// regex. Allowed characters are the RFC 3986 unreserved set. openssl rand
+// -hex 32 is a subset. This repo does not generate a gateway token (no
+// base64, which would add +, /, and =).
+
+const GATEWAY_TOKEN_PATTERN = /^[A-Za-z0-9._~-]+$/;
+const GATEWAY_TOKEN_ALLOWED_CHARACTERS = 'A-Z, a-z, 0-9, and . _ ~ -';
+
+/**
+ * @param {unknown} token
+ * @returns {'ok' | 'empty' | 'invalid'}
+ */
+function classifyGatewayToken(token) {
+  if (typeof token !== 'string' || token.length === 0) return 'empty';
+  return GATEWAY_TOKEN_PATTERN.test(token) ? 'ok' : 'invalid';
+}
+
+/**
+ * Rejection text. The token value is not a parameter and is never included.
+ * @param {'empty' | 'invalid'} reason
+ * @param {string} prefix - Log prefix, e.g. "[entrypoint]" or "[configure]"
+ * @returns {string}
+ */
+function gatewayTokenError(reason, prefix) {
+  const headline = reason === 'empty'
+    ? `${prefix} ERROR: OPENCLAW_GATEWAY_TOKEN is required.`
+    : `${prefix} ERROR: OPENCLAW_GATEWAY_TOKEN contains characters that are not allowed.`;
+  return [
+    headline,
+    `${prefix} Allowed characters: ${GATEWAY_TOKEN_ALLOWED_CHARACTERS}`,
+    `${prefix} Generate one with: openssl rand -hex 32`,
+  ].join('\n');
+}
+
 module.exports = {
   REGEX,
   ENV_VAR,
@@ -907,4 +946,8 @@ module.exports = {
   browserCdpUrls,
   allowComposeBrowserSidecar,
   resolveComposeBrowserSidecarSsrF,
+  GATEWAY_TOKEN_PATTERN,
+  GATEWAY_TOKEN_ALLOWED_CHARACTERS,
+  classifyGatewayToken,
+  gatewayTokenError,
 };

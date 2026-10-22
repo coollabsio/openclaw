@@ -40,6 +40,10 @@ const {
   browserCdpUrls,
   allowComposeBrowserSidecar,
   resolveComposeBrowserSidecarSsrF,
+  GATEWAY_TOKEN_PATTERN,
+  GATEWAY_TOKEN_ALLOWED_CHARACTERS,
+  classifyGatewayToken,
+  gatewayTokenError,
 } = require('./utils');
 
 let passed = 0;
@@ -1364,6 +1368,216 @@ function runEntrypointOpenAIGate(env) {
   eq(run.status, 0, 'entrypoint gate exits 0 when no OpenAI-compatible var is set');
   assert(!run.output.includes('WARNING'), 'entrypoint gate stays quiet when the provider is absent');
   assert(run.output.includes('HAS_PROVIDER=0'), 'absent OpenAI-compatible vars do not count as a provider');
+}
+
+// ── Gateway token charset ───────────────────────────────────────────────────
+// nginx interpolates the token into double quotes. The entrypoint rejects a
+// value outside ^[A-Za-z0-9._~-]+$ before that config is generated.
+
+console.log('gateway token charset');
+
+const HEX_GATEWAY_TOKEN = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+
+eq(GATEWAY_TOKEN_PATTERN.source, '^[A-Za-z0-9._~-]+$', 'gateway token pattern is the unreserved set');
+eq(
+  GATEWAY_TOKEN_ALLOWED_CHARACTERS,
+  'A-Z, a-z, 0-9, and . _ ~ -',
+  'allowed-character text names letters, digits, and . _ ~ -',
+);
+eq(classifyGatewayToken(HEX_GATEWAY_TOKEN), 'ok', '64-char hex token is valid');
+eq(classifyGatewayToken('my-secret-token'), 'ok', 'documented placeholder my-secret-token is valid');
+eq(classifyGatewayToken('Az9._~-'), 'ok', 'every allowed symbol is valid');
+eq(classifyGatewayToken('bad"quote'), 'invalid', 'a double quote is rejected');
+eq(classifyGatewayToken('bad token'), 'invalid', 'a space is rejected');
+eq(classifyGatewayToken('bad$token'), 'invalid', 'a dollar sign is rejected');
+eq(classifyGatewayToken(''), 'empty', 'an empty string is empty');
+eq(classifyGatewayToken(undefined), 'empty', 'an unset token is empty');
+eq(classifyGatewayToken('   '), 'invalid', 'whitespace is not trimmed into a valid token');
+for (const bad of ['a\\b', 'a;b', 'a{b', 'a}b', "a'b", 'a`b', 'tok+en', 'tok/en', 'tok=en']) {
+  eq(classifyGatewayToken(bad), 'invalid', `nginx-special or base64 character is rejected (${JSON.stringify(bad)})`);
+}
+assert(
+  !gatewayTokenError('invalid', '[entrypoint]').includes('bad"quote'),
+  'the charset error helper has no token parameter to leak',
+);
+assert(
+  gatewayTokenError('invalid', '[entrypoint]').includes('OPENCLAW_GATEWAY_TOKEN'),
+  'charset error names OPENCLAW_GATEWAY_TOKEN',
+);
+assert(
+  gatewayTokenError('invalid', '[entrypoint]').includes(GATEWAY_TOKEN_ALLOWED_CHARACTERS),
+  'charset error lists the allowed characters',
+);
+assert(
+  gatewayTokenError('empty', '[entrypoint]').includes('openssl rand -hex 32'),
+  'empty-token error suggests openssl rand -hex 32',
+);
+
+{
+  const generated = spawnSync('openssl', ['rand', '-hex', '32'], { encoding: 'utf8' });
+  eq(generated.status, 0, 'openssl rand -hex 32 runs');
+  const hex = (generated.stdout || '').trim();
+  eq(hex.length, 64, 'openssl rand -hex 32 is 64 hex characters');
+  eq(/^[0-9a-f]+$/.test(hex), true, 'openssl hex output is only hex digits');
+  eq(classifyGatewayToken(hex), 'ok', 'openssl rand -hex 32 matches the gateway token pattern');
+}
+
+function runEntrypointGatewayToken(token, { unset = false } = {}) {
+  const entrypoint = fs.readFileSync(path.join(__dirname, 'entrypoint.sh'), 'utf8');
+  const start = entrypoint.indexOf('# >>> gateway-token-gate');
+  const end = entrypoint.indexOf('# <<< gateway-token-gate');
+  const nginxStart = entrypoint.indexOf('# ── Generate nginx config');
+  const storageStart = entrypoint.indexOf('setting up persistent tool storage');
+  if (start < 0 || end < start) {
+    throw new Error('gateway token gate markers missing from entrypoint.sh');
+  }
+  if (!(end < nginxStart)) {
+    throw new Error('gateway token gate is not before nginx config generation');
+  }
+  if (!(end < storageStart)) {
+    throw new Error('gateway token gate is not before volume setup');
+  }
+  const gate = entrypoint.slice(start, end);
+  if (!gate.includes('^[A-Za-z0-9._~-]+$')) {
+    throw new Error('entrypoint gate does not use the gateway token pattern');
+  }
+  const nginxEnd = entrypoint.indexOf('# ── Start nginx');
+  const nginxSection = entrypoint.slice(nginxStart, nginxEnd);
+  const insertions = nginxSection.match(/\$\{GATEWAY_TOKEN\}/g) || [];
+  if (insertions.length !== 6) {
+    throw new Error(`expected 6 nginx GATEWAY_TOKEN insertions, found ${insertions.length}`);
+  }
+  const outside = entrypoint.replace(nginxSection, '').match(/\$\{GATEWAY_TOKEN\}/g);
+  if (outside) {
+    throw new Error('GATEWAY_TOKEN is interpolated outside the nginx config section');
+  }
+  const healthzStart = nginxSection.indexOf('location = /healthz');
+  const healthzEnd = nginxSection.indexOf('location @healthz_fallback');
+  if (healthzStart < 0 || healthzEnd < healthzStart || nginxSection.slice(healthzStart, healthzEnd).includes('GATEWAY_TOKEN')) {
+    throw new Error('healthz location interpolates the gateway token');
+  }
+  const env = { PATH: process.env.PATH };
+  if (!unset) env.OPENCLAW_GATEWAY_TOKEN = token;
+  const result = spawnSync(
+    'bash',
+    ['-c', `set -euo pipefail\n${gate}\nprintf 'GATEWAY_TOKEN_OK\\n'`],
+    { encoding: 'utf8', env },
+  );
+  return {
+    status: result.status,
+    output: `${result.stdout || ''}\n${result.stderr || ''}`,
+  };
+}
+
+{
+  const run = runEntrypointGatewayToken(HEX_GATEWAY_TOKEN);
+  eq(run.status, 0, 'entrypoint accepts a hex gateway token');
+  assert(run.output.includes('GATEWAY_TOKEN_OK'), 'hex token continues past the gate');
+  assert(!run.output.includes(HEX_GATEWAY_TOKEN), 'entrypoint does not print a valid gateway token');
+  assert(!run.output.includes('ERROR'), 'hex token does not log an error');
+}
+
+{
+  const token = 'bad"quote';
+  const run = runEntrypointGatewayToken(token);
+  assert(run.status !== 0, 'entrypoint rejects a gateway token that contains a quote');
+  assert(
+    run.output.includes(gatewayTokenError('invalid', '[entrypoint]')),
+    'quote-token error names OPENCLAW_GATEWAY_TOKEN, lists allowed characters, and suggests openssl',
+  );
+  assert(!run.output.includes(token), 'entrypoint does not print a quoted gateway token');
+  assert(!run.output.includes('GATEWAY_TOKEN_OK'), 'a quoted token exits before nginx config is generated');
+  assert(!run.output.includes('unexpected'), 'a quoted token does not reach an nginx unexpected error');
+}
+
+{
+  const token = 'bad token';
+  const run = runEntrypointGatewayToken(token);
+  assert(run.status !== 0, 'entrypoint rejects a gateway token that contains a space');
+  assert(run.output.includes(gatewayTokenError('invalid', '[entrypoint]')), 'space-token error lists the allowed characters');
+  assert(!run.output.includes(token), 'entrypoint does not print a gateway token that contains a space');
+  assert(!run.output.includes('GATEWAY_TOKEN_OK'), 'a space token exits before nginx config is generated');
+}
+
+{
+  const token = 'bad$token';
+  const run = runEntrypointGatewayToken(token);
+  assert(run.status !== 0, 'entrypoint rejects a gateway token that contains $');
+  assert(run.output.includes(gatewayTokenError('invalid', '[entrypoint]')), 'dollar-token error lists the allowed characters');
+  assert(!run.output.includes(token), 'entrypoint does not print a gateway token that contains $');
+  assert(!run.output.includes('GATEWAY_TOKEN_OK'), 'a $ token exits before nginx config is generated');
+}
+
+{
+  const run = runEntrypointGatewayToken('');
+  assert(run.status !== 0, 'entrypoint rejects an empty gateway token');
+  assert(
+    run.output.includes(gatewayTokenError('empty', '[entrypoint]')),
+    'empty-token error names OPENCLAW_GATEWAY_TOKEN and suggests openssl rand -hex 32',
+  );
+  assert(!run.output.includes('GATEWAY_TOKEN_OK'), 'an empty token exits before nginx config is generated');
+}
+
+{
+  const run = runEntrypointGatewayToken(undefined, { unset: true });
+  assert(run.status !== 0, 'entrypoint rejects an unset gateway token');
+  assert(run.output.includes(gatewayTokenError('empty', '[entrypoint]')), 'unset token uses the required error');
+}
+
+{
+  const token = 'bad"quote';
+  const run = runOpenAICompatibleConfigure({
+    ANTHROPIC_API_KEY: 'test-key',
+    OPENCLAW_GATEWAY_TOKEN: token,
+  });
+  eq(run.status, 1, 'configure.js rejects a gateway token that contains a quote');
+  assert(run.output.includes(gatewayTokenError('invalid', '[configure]')), 'configure.js names OPENCLAW_GATEWAY_TOKEN and the allowed characters');
+  assert(!run.output.includes(token), 'configure.js does not print a quoted gateway token');
+  eq(run.written, null, 'configure.js does not write a config for a quoted token');
+}
+
+{
+  const token = 'bad token';
+  const run = runOpenAICompatibleConfigure({ OPENCLAW_GATEWAY_TOKEN: token });
+  eq(run.status, 1, 'configure.js rejects a space token before the provider check');
+  assert(run.output.includes('OPENCLAW_GATEWAY_TOKEN'), 'space-token failure names the variable');
+  assert(!run.output.includes('No AI provider'), 'a bad token is not reported as a missing provider');
+  assert(!run.output.includes(token), 'configure.js does not print a gateway token that contains a space');
+  eq(run.written, null, 'configure.js does not write a config for a space token');
+}
+
+{
+  const token = 'bad$token';
+  const run = runOpenAICompatibleConfigure({
+    ANTHROPIC_API_KEY: 'test-key',
+    OPENCLAW_GATEWAY_TOKEN: token,
+  });
+  eq(run.status, 1, 'configure.js rejects a gateway token that contains $');
+  assert(!run.output.includes(token), 'configure.js does not print a gateway token that contains $');
+  eq(run.written, null, 'configure.js does not write a config for a $ token');
+}
+
+{
+  const run = runOpenAICompatibleConfigure({
+    ANTHROPIC_API_KEY: 'test-key',
+    OPENCLAW_GATEWAY_TOKEN: HEX_GATEWAY_TOKEN,
+  });
+  eq(run.status, 0, 'configure.js accepts a hex gateway token');
+  eq(run.written.gateway.auth.token, HEX_GATEWAY_TOKEN, 'configure.js writes the hex token to gateway.auth.token');
+  eq(run.written.gateway.auth.mode, 'token', 'configure.js keeps token auth mode');
+  assert(!run.output.includes(HEX_GATEWAY_TOKEN), 'configure.js does not print a valid gateway token');
+}
+
+{
+  const run = runOpenAICompatibleConfigure({
+    ANTHROPIC_API_KEY: 'test-key',
+    OPENCLAW_GATEWAY_TOKEN: '',
+  });
+  eq(run.status, 0, 'configure.js leaves an empty token for the entrypoint to reject');
+  assert(
+    !run.written.gateway.auth || run.written.gateway.auth.token === undefined,
+    'configure.js does not invent a gateway token',
+  );
 }
 
 // ── Ollama provider ─────────────────────────────────────────────────────────
