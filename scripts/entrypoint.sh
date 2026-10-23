@@ -340,8 +340,9 @@ PROXY_ARGS_MAP="map \"\$ocw_has_token:\$args\" \$ocw_proxy_args {
 }"
 # Inserted directly into the unquoted nginx heredoc (expanded once, not rescanned).
 XFF_DIRECT='$proxy_add_x_forwarded_for'
-# Hooks block is expanded again by that heredoc, so its dollar signs stay escaped.
-HOOKS_XFF='\$proxy_add_x_forwarded_for'
+# The hooks block is pasted into that heredoc too, so it is not rescanned either:
+# nginx must receive a plain "$" (an escaped one reached nginx as "\<ip>").
+HOOKS_XFF='$proxy_add_x_forwarded_for'
 
 if [ -n "$AUTH_PASSWORD" ]; then
   echo "[entrypoint] setting up nginx basic auth (user: $AUTH_USERNAME)"
@@ -438,7 +439,7 @@ map \$ocw_bearer_passthru \$ocw_upstream_auth {
   # rightmost untrusted X-Forwarded-For hop; a client-supplied value must not
   # be that hop when the TCP peer is loopback.
   XFF_DIRECT='$remote_addr'
-  HOOKS_XFF='\$remote_addr'
+  HOOKS_XFF='$remote_addr'
 else
   echo "[entrypoint] no AUTH_PASSWORD set, nginx will not require authentication"
 fi
@@ -448,12 +449,12 @@ HOOKS_LOCATION_BLOCK=""
 if [ -n "$HOOKS_PATH" ]; then
   HOOKS_LOCATION_BLOCK="location ${HOOKS_PATH} {
         proxy_pass http://127.0.0.1:${GATEWAY_PORT};
-        proxy_set_header Authorization \\\$http_authorization;
+        proxy_set_header Authorization \$http_authorization;
 
-        proxy_set_header Host \\\$host;
-        proxy_set_header X-Real-IP \\\$remote_addr;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For ${HOOKS_XFF};
-        proxy_set_header X-Forwarded-Proto \\\$scheme;
+        proxy_set_header X-Forwarded-Proto \$scheme;
 
         proxy_http_version 1.1;
 

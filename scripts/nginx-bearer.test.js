@@ -492,6 +492,24 @@ assert(
   "custom trustedProxies is not overwritten",
 );
 
+// The hooks block is built in a double-quoted string and pasted into the nginx
+// heredoc, which does not rescan it, so an escaped "\$" reached nginx literally:
+// X-Forwarded-For arrived as "\<ip>" and OpenClaw 2026.10.6 answered every hook
+// call 403 proxy_attribution_required.
+for (const [label, auth, xff] of [
+  ["with auth", authPassword, "$remote_addr"],
+  ["without auth", "", "$proxy_add_x_forwarded_for"],
+]) {
+  const conf = render(ENTRYPOINT, { AUTH_PASSWORD: auth, HOOKS_PATH: "/hooks" });
+  const start = conf.indexOf("location /hooks {");
+  const block = start < 0 ? "" : conf.slice(start, conf.indexOf("\n    }", start));
+  assert(block.length > 0, `hooks block rendered (${label})`);
+  assert(!block.includes("\\$"), `hooks block has no escaped \\$ (${label})`);
+  assert(block.includes(`proxy_set_header X-Forwarded-For ${xff};`), `hooks X-Forwarded-For is ${xff} (${label})`);
+  assert(block.includes("proxy_set_header Authorization $http_authorization;"), `hooks passes Authorization through (${label})`);
+  assert(block.includes("proxy_set_header Host $host;"), `hooks passes Host through (${label})`);
+}
+
 if (process.env.DUMP_NGINX === "1") {
   fs.writeFileSync("/tmp/nginx-with-auth.conf", withAuth);
   fs.writeFileSync("/tmp/nginx-no-auth.conf", noAuth);
