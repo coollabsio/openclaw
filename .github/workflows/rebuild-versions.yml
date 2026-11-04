@@ -34,19 +34,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          # "latest" tag follows the newest stable release (releases/latest skips pre-releases)
+          LATEST=$(curl --fail -s -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/openclaw/openclaw/releases/latest" \
+            | jq -er '.tag_name | ltrimstr("v")')
+          echo "latest_version=$LATEST" >> $GITHUB_OUTPUT
+          echo "Stable latest: $LATEST"
+
           if [ -n "${{ github.event.inputs.specific_version }}" ]; then
             VERSION="${{ github.event.inputs.specific_version }}"
             echo "versions=[\"$VERSION\"]" >> $GITHUB_OUTPUT
-            echo "latest_version=$VERSION" >> $GITHUB_OUTPUT
             echo "Building specific version: $VERSION"
           else
             COUNT="${{ github.event.inputs.version_count || '10' }}"
-            VERSIONS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+            VERSIONS=$(curl --fail -s -H "Authorization: Bearer $GH_TOKEN" \
               "https://api.github.com/repos/openclaw/openclaw/releases?per_page=$COUNT" \
               | jq -c '[.[].tag_name | ltrimstr("v")]')
-            LATEST=$(echo "$VERSIONS" | jq -r '.[0]')
             echo "versions=$VERSIONS" >> $GITHUB_OUTPUT
-            echo "latest_version=$LATEST" >> $GITHUB_OUTPUT
             echo "Building versions: $VERSIONS"
           fi
 
