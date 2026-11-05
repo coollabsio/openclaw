@@ -2175,6 +2175,27 @@ function browserPolicyOf(written) {
   return written && written.config && written.config.browser && written.config.browser.ssrfPolicy;
 }
 
+// Coolify still supplies these env vars. OpenClaw v2026.10.10 rejects the
+// corresponding config keys; doctor must not have to remove them every boot.
+for (const [timeout, handshake] of [['1500', '3000'], ['9000', '12000']]) {
+  const env = {
+    BROWSER_CDP_URL: 'http://browser:9223',
+    BROWSER_DEFAULT_PROFILE: 'openclaw',
+    BROWSER_REMOTE_TIMEOUT_MS: timeout,
+    BROWSER_REMOTE_HANDSHAKE_TIMEOUT_MS: handshake,
+  };
+  const first = runBrowserConfigure(env);
+  const restarted = first && runBrowserConfigure(env, { persisted: first.config });
+  for (const [label, written] of [['fresh start', first], ['restart', restarted]]) {
+    const browser = written && written.config.browser;
+    assert(browser && !Object.hasOwn(browser, 'remoteCdpTimeoutMs'), `${label}: retired CDP timeout is not generated`);
+    assert(browser && !Object.hasOwn(browser, 'remoteCdpHandshakeTimeoutMs'), `${label}: retired CDP handshake timeout is not generated`);
+    eq(browser && browser.cdpUrl, 'http://browser:9223', `${label}: CDP URL is kept with legacy timeout env vars`);
+    eq(browser && browser.defaultProfile, 'openclaw', `${label}: browser profile is kept with legacy timeout env vars`);
+    eq(browserPolicyOf(written), { allowedHostnames: ['browser'] }, `${label}: narrow sidecar allowance is kept with legacy timeout env vars`);
+  }
+}
+
 {
   const written = runBrowserConfigure({
     BROWSER_CDP_URL: 'http://browser:9223',
