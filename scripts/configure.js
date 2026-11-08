@@ -703,10 +703,8 @@ if (process.env.BROWSER_CDP_URL) {
     ensure(br, "snapshotDefaults");
     br.snapshotDefaults.mode = process.env.BROWSER_SNAPSHOT_MODE;
   }
-  if (process.env.BROWSER_REMOTE_TIMEOUT_MS)
-    br.remoteCdpTimeoutMs = parseInt(process.env.BROWSER_REMOTE_TIMEOUT_MS, 10);
-  if (process.env.BROWSER_REMOTE_HANDSHAKE_TIMEOUT_MS)
-    br.remoteCdpHandshakeTimeoutMs = parseInt(process.env.BROWSER_REMOTE_HANDSHAKE_TIMEOUT_MS, 10);
+  // BROWSER_REMOTE_TIMEOUT_MS and BROWSER_REMOTE_HANDSHAKE_TIMEOUT_MS are
+  // legacy template inputs. Their config keys are retired; use built-in defaults.
   if (process.env.BROWSER_DEFAULT_PROFILE)
     br.defaultProfile = process.env.BROWSER_DEFAULT_PROFILE;
 } else if (config.browser) {

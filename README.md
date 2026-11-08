@@ -124,6 +124,8 @@ Two-layer Docker build:
 1. **Base image** (`Dockerfile.base`) — builds openclaw from source. Tagged `coollabsio/openclaw-base:<version>`.
 2. **Final image** (`Dockerfile`) — FROM base, adds nginx + env-to-config scripts. Tagged `coollabsio/openclaw:<version>`.
 
+`configure.js` ignores the legacy `BROWSER_REMOTE_TIMEOUT_MS` and `BROWSER_REMOTE_HANDSHAKE_TIMEOUT_MS` inputs still supplied by some templates. OpenClaw 2026.10.10 rejects their config keys and uses built-in timeouts. Existing keys in persisted or custom JSON remain for `doctor --fix` to migrate; the generator no longer recreates them from these inputs on each startup.
+
 `GET /healthz` on the published port is not behind basic auth. Coolify and the image `HEALTHCHECK` both probe it. nginx forwards that path to the gateway's own `/healthz` and does not rewrite it to `/`. A live gateway returns `{"ok":true,"status":"live"}`. When the gateway port is closed, or the gateway returns 502, 503, or 504, nginx answers 503 with `{"ok":false,"status":"unavailable"}`, and `curl -f` fails. The health check's `--start-period` is 5 minutes. Failures in that window do not count, and the first success marks the container healthy immediately, so the Linuxbrew volume copy, `configure.js`, `doctor --fix`, and the first gateway boot are not marked unhealthy. After that success, later failures count toward `--retries`. If the gateway process exits, nginx keeps running so those probes can fail and Docker can report the container unhealthy.
 
 ## Agent sandbox
@@ -481,8 +483,8 @@ When hooks are enabled and `AUTH_PASSWORD` is set, the hooks path automatically 
 | `BROWSER_CDP_URL` | | Remote CDP URL. The compose file sets `http://browser:9223`. Required to activate the browser tool. |
 | `BROWSER_EVALUATE_ENABLED` | `false` | Allow JavaScript evaluation in page context via browser actions. |
 | `BROWSER_SNAPSHOT_MODE` | | Default snapshot mode (e.g. `efficient`). |
-| `BROWSER_REMOTE_TIMEOUT_MS` | `1500` | HTTP timeout in ms for remote CDP connection. |
-| `BROWSER_REMOTE_HANDSHAKE_TIMEOUT_MS` | `3000` | WebSocket handshake timeout in ms for remote CDP. |
+| `BROWSER_REMOTE_TIMEOUT_MS` | | Deprecated; ignored. OpenClaw uses its built-in remote CDP timeout. |
+| `BROWSER_REMOTE_HANDSHAKE_TIMEOUT_MS` | | Deprecated; ignored. OpenClaw uses its built-in remote CDP handshake timeout. |
 | `BROWSER_DEFAULT_PROFILE` | | Override the default browser profile name. |
 | `BROWSER_SSRF_ALLOW_COMPOSE_SIDECAR` | | Set to `false` or `0` to skip the automatic `browser` hostname allowance. Any other value, including unset, leaves that allowance on when the CDP hostname is exactly `browser`. |
 
