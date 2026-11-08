@@ -32,6 +32,25 @@ RUN set -eux; \
     install -m 0755 /tmp/docker/docker /usr/local/libexec/openclaw-docker; \
     rm -rf /tmp/docker
 
+# OpenClaw's GitHub device sign-in and agent commands need gh on the gateway PATH.
+RUN set -eux; \
+    version="2.103.3"; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) checksum="4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d" ;; \
+      arm64) checksum="ee32df2323c8847f5fac6cb6b4b69ca75828e9329a8f22f677021f7b3306ce63" ;; \
+      *) echo "unsupported architecture for GitHub CLI: ${arch}" >&2; exit 1 ;; \
+    esac; \
+    archive="gh_${version}_linux_${arch}"; \
+    tmp="$(mktemp -d)"; \
+    cd "$tmp"; \
+    curl -fsSL --retry 3 -o "${archive}.tar.gz" "https://github.com/cli/cli/releases/download/v${version}/${archive}.tar.gz"; \
+    printf '%s  %s\n' "$checksum" "${archive}.tar.gz" | sha256sum -c -; \
+    tar -xzf "${archive}.tar.gz" "${archive}/bin/gh"; \
+    install -m 0755 "${archive}/bin/gh" /usr/local/bin/gh; \
+    cd /; \
+    rm -rf "$tmp"
+
 COPY scripts/ /app/scripts/
 # Re-install the CLI wrapper from this repo so an older base image still refuses
 # `openclaw update`. Wrap npm so `npm i -g openclaw` stops before EEXIST.
