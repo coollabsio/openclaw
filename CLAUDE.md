@@ -65,13 +65,14 @@ Complex keys (`presets`, `mappings`, `transformsDir`) are JSON-only — not expo
 
 Docs: https://docs.openclaw.ai/automation/webhook
 
-### Browser env vars (7 total)
+### Browser env vars (5 active)
 
 Gate: `BROWSER_CDP_URL` (required to activate).
 
 Strings: `BROWSER_CDP_URL`, `BROWSER_SNAPSHOT_MODE`, `BROWSER_DEFAULT_PROFILE`
 Booleans: `BROWSER_EVALUATE_ENABLED`, `BROWSER_SSRF_ALLOW_COMPOSE_SIDECAR`
-Numbers: `BROWSER_REMOTE_TIMEOUT_MS`, `BROWSER_REMOTE_HANDSHAKE_TIMEOUT_MS`
+
+Legacy `BROWSER_REMOTE_TIMEOUT_MS` and `BROWSER_REMOTE_HANDSHAKE_TIMEOUT_MS` are ignored. Their config keys are retired in OpenClaw 2026.10.10; built-in defaults apply. Do not reintroduce them from env vars. Existing persisted/custom JSON keys are left to Doctor's migration.
 
 Merge behavior: same as Telegram/Discord/Slack (merge, custom JSON keys preserved).
 
