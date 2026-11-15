@@ -26,7 +26,7 @@ Open `http://localhost:8080` and sign in as `admin` / `changeme` (or whatever yo
 - `AUTH_PASSWORD` — HTTP basic auth for the web UI and the WebSocket. `AUTH_USERNAME` defaults to `admin` when omitted. `/healthz` stays open.
 - `OPENCLAW_GATEWAY_TOKEN` — required. Allowed characters are letters (A-Z, a-z), digits (0-9), and `.` `_` `~` `-`. The container exits if the value is missing, empty, or anything else, before nginx config is generated. It is written to `gateway.auth.token`. The command above generates one with `openssl rand -hex 32`. Save that value. The Mac app and the Control UI both need it. A placeholder such as `my-secret-token` also starts the container. It is not auto-generated.
 - `OPENCLAW_ALLOWED_ORIGINS` — browser origins allowed to open the Control UI WebSocket. Coolify adds the application origin on its own, so a Coolify deploy can leave this unset. A plain `docker run` has no Coolify URL. nginx forwards `X-Forwarded-*`, and OpenClaw 2026.10.5 then does not treat `http://localhost:8080` as an implicit same-origin client. Set the origin you actually open. `http://localhost:5173` and `http://localhost:3000` are other dev servers. They do not allow the UI on port 8080, and the page will load while the gateway rejects the socket with `origin not allowed`.
-- `-p 8080:8080` — nginx. The gateway listens on `127.0.0.1:18789` inside the container and is not published. Do not map 18789 unless you mean to skip nginx. See [Connect the Mac app](docs/mac-app.md).
+- `-p 8080:8080` — nginx. The gateway listens on `127.0.0.1:18789` inside the container and is not published. Do not map 18789 unless you mean to skip nginx. See [Connect the Mac app](docs/mac-app.md) and [Connect the Android app](docs/android-app.md).
 - `/data` — required volume. Persists config, credentials, paired devices, workspace, and chat history across container recreates (`docker compose down` keeps the named volume; `docker compose down -v` deletes it). OpenClaw 2026.10.5 stores sessions in `/data/.openclaw/agents/<agentId>/agent/openclaw-agent.sqlite` and paired devices in `/data/.openclaw/state/openclaw.sqlite`. The image sets `HOME` and `OPENCLAW_HOME` to `/data` so `~/.openclaw` is that directory. `/root/.openclaw` is outside the volume. Backups: [Back up and restore `/data`](docs/backup-restore.md).
 
 ### Full Setup (docker-compose)
@@ -84,6 +84,10 @@ If approval still fails, match the message:
 ### Mac app
 
 The Mac app uses the same approval commands, with a different URL. On OpenClaw v2026.10.5 the gateway address is `wss://<your domain>` (Coolify) or `ws://<host>:8080` (`docker run`), and `OPENCLAW_GATEWAY_TOKEN` goes in the token field, not in the URL. `gateway.mode` on the Mac is `remote`. Do not write that `gateway.remote` block into the container config, and do not put `AUTH_USERNAME`:`AUTH_PASSWORD` in the WebSocket URL. The app rejects URL userinfo. When `AUTH_PASSWORD` is set, nginx still requires basic auth on the WebSocket, which that direct URL cannot send. Details, including the SSH alternative: [Connect the Mac app](docs/mac-app.md).
+
+### Android app
+
+The official Android app uses the same Coolify hostname as `wss://<your domain>` on port 443. `openclaw qr` can advertise that address while `gateway.bind` stays `loopback`. When `AUTH_PASSWORD` is set, nginx still requires basic auth on the WebSocket. The source tags checked for the Android page do not include a proxy-login field. Details are in [Connect the Android app](docs/android-app.md).
 
 ### Back up and restore `/data`
 
@@ -193,6 +197,7 @@ Dockerfile.browser                  — browser sidecar image (FROM lscr.io/linu
 browser/cdp-proxy.conf              — sidecar CDP proxy 0.0.0.0:9223 → 127.0.0.1:9222
 docs/backup-restore.md              — back up and restore /data, including Coolify volume backups
 docs/mac-app.md                     — connect the OpenClaw Mac app to this gateway
+docs/android-app.md                 — connect the OpenClaw Android app to this gateway
 .dockerignore                       — standard ignores
 .env.example                        — env var reference
 ```
