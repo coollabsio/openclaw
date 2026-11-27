@@ -36,10 +36,59 @@ image_update_is_value_token() {
   esac
 }
 
-# True when argv is `openclaw update` or the root `--update` flag.
+# True when the tokens after `update` are OpenClaw v2026.10.10's read-only
+# `update cleanup` preview. That command's boolean flags are `--dry-run`,
+# `--json`, and `--yes`, in either order around `cleanup`. `--dry-run` returns
+# before retirement writes.
+image_update_cleanup_is_readonly_preview() {
+  local -a args=("$@")
+  local i=0
+  local arg
+  local saw_cleanup=0
+  local saw_dry_run=0
+
+  while [ "$i" -lt "${#args[@]}" ]; do
+    arg="${args[$i]}"
+    case "$arg" in
+      --)
+        i=$((i + 1))
+        while [ "$i" -lt "${#args[@]}" ]; do
+          if [ "${args[$i]}" = "cleanup" ] && [ "$saw_cleanup" -eq 0 ]; then
+            saw_cleanup=1
+            i=$((i + 1))
+            continue
+          fi
+          return 1
+        done
+        break
+        ;;
+      --dry-run)
+        saw_dry_run=1
+        ;;
+      --json|--yes)
+        ;;
+      -*)
+        return 1
+        ;;
+      cleanup)
+        if [ "$saw_cleanup" -eq 1 ]; then
+          return 1
+        fi
+        saw_cleanup=1
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+    i=$((i + 1))
+  done
+
+  [ "$saw_cleanup" -eq 1 ] && [ "$saw_dry_run" -eq 1 ]
+}
+
 # Global flags that precede the command are skipped the same way the
-# v2026.10.5 CLI scans them (`--profile`, `--log-level`, `--container`,
-# `--dev`, `--no-color`). `--update` after another command is left alone.
+# v2026.10.10 CLI scans them (`--profile`, `--log-level`, `--container`,
+# `--dev`, `--no-color`).
 image_update_openclaw_is_update() {
   local -a args=("$@")
   local i=0
@@ -49,9 +98,13 @@ image_update_openclaw_is_update() {
   while [ "$i" -lt "${#args[@]}" ]; do
     arg="${args[$i]}"
     if [ "$arg" = "--" ]; then
-      next="${args[$((i + 1))]:-}"
-      [ "$next" = "update" ]
-      return
+      if [ "${args[$((i + 1))]:-}" != "update" ]; then
+        return 1
+      fi
+      if image_update_cleanup_is_readonly_preview "${args[@]:$((i + 2))}"; then
+        return 1
+      fi
+      return 0
     fi
     if [ "$arg" = "--update" ]; then
       return 0
@@ -79,6 +132,9 @@ image_update_openclaw_is_update() {
         continue
         ;;
       update)
+        if image_update_cleanup_is_readonly_preview "${args[@]:$((i + 1))}"; then
+          return 1
+        fi
         return 0
         ;;
       *)

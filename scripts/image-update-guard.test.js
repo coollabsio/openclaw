@@ -82,6 +82,125 @@ expectUpdate(["--dev", "--no-color", "update"], true, "boolean root flags then u
 expectUpdate(["--container", "box", "--update"], true, "container then --update");
 expectUpdate(["--", "update"], true, "literal update command");
 
+expectUpdate(
+  ["update", "cleanup", "--dry-run"],
+  false,
+  "update cleanup --dry-run",
+);
+expectUpdate(
+  ["update", "cleanup", "--dry-run", "--json"],
+  false,
+  "cleanup dry-run then json",
+);
+expectUpdate(
+  ["update", "cleanup", "--json", "--dry-run"],
+  false,
+  "cleanup json then dry-run",
+);
+expectUpdate(
+  ["update", "--dry-run", "cleanup"],
+  false,
+  "dry-run before cleanup",
+);
+expectUpdate(
+  ["update", "--json", "cleanup", "--dry-run"],
+  false,
+  "json before cleanup, dry-run after",
+);
+expectUpdate(
+  ["update", "--dry-run", "--json", "cleanup"],
+  false,
+  "dry-run and json before cleanup",
+);
+expectUpdate(
+  ["update", "cleanup", "--yes", "--dry-run", "--json"],
+  false,
+  "yes with dry-run stays a preview",
+);
+expectUpdate(
+  ["--profile", "work", "update", "cleanup", "--dry-run", "--json"],
+  false,
+  "profile then cleanup dry-run json",
+);
+expectUpdate(
+  ["--profile=work", "--dev", "--no-color", "update", "--dry-run", "cleanup"],
+  false,
+  "root flags then dry-run before cleanup",
+);
+expectUpdate(
+  ["--log-level", "debug", "update", "cleanup", "--dry-run"],
+  false,
+  "log-level then cleanup dry-run",
+);
+expectUpdate(
+  ["--", "update", "cleanup", "--dry-run", "--json"],
+  false,
+  "literal update cleanup dry-run",
+);
+
+expectUpdate(["update", "cleanup"], true, "cleanup without dry-run");
+expectUpdate(["update", "cleanup", "--json"], true, "cleanup json without dry-run");
+expectUpdate(["update", "cleanup", "--yes"], true, "cleanup yes without dry-run");
+expectUpdate(
+  ["update", "cleanup", "--yes", "--json"],
+  true,
+  "cleanup yes json without dry-run",
+);
+expectUpdate(["update", "--dry-run"], true, "update dry-run is still an upgrade preview");
+expectUpdate(["update", "status", "--dry-run"], true, "update status --dry-run");
+expectUpdate(["update", "repair", "--dry-run"], true, "update repair --dry-run");
+expectUpdate(["update", "wizard", "--json"], true, "update wizard");
+expectUpdate(
+  ["update", "cleanup", "--channel", "--dry-run"],
+  true,
+  "dry-run consumed as --channel value",
+);
+expectUpdate(
+  ["update", "--channel", "--dry-run", "cleanup"],
+  true,
+  "dry-run consumed as --channel value before cleanup",
+);
+expectUpdate(
+  ["update", "--dry-run", "--", "cleanup"],
+  false,
+  "dry-run, end of options, then cleanup",
+);
+expectUpdate(
+  ["update", "--channel", "beta", "cleanup", "--dry-run"],
+  true,
+  "channel before cleanup dry-run",
+);
+expectUpdate(
+  ["update", "cleanup", "--tag=--dry-run"],
+  true,
+  "dry-run is the --tag value",
+);
+expectUpdate(
+  ["update", "cleanup", "--", "--dry-run"],
+  true,
+  "dry-run after -- is positional",
+);
+expectUpdate(
+  ["update", "cleanup", "--dry-run", "extra"],
+  true,
+  "cleanup dry-run with an extra positional",
+);
+expectUpdate(
+  ["update", "cleanup", "--dry-run=true"],
+  true,
+  "dry-run equals form is not the boolean flag",
+);
+expectUpdate(
+  ["--update", "cleanup", "--dry-run"],
+  true,
+  "root --update stays an upgrade",
+);
+expectUpdate(
+  ["update", "cleanup", "--dry-run", "--no-restart"],
+  true,
+  "cleanup dry-run with an update-only flag",
+);
+
 expectNpm(["--version"], false, "npm --version");
 expectNpm(["install", "cowsay"], false, "local install of another package");
 expectNpm(["install", "openclaw"], false, "local install of openclaw");
@@ -123,6 +242,8 @@ function runWrapper(script, args) {
 
 for (const [script, args, label] of [
   [OPENCLAW_BIN, ["update"], "openclaw-bin.sh update"],
+  [OPENCLAW_BIN, ["update", "cleanup"], "openclaw-bin.sh update cleanup"],
+  [OPENCLAW_BIN, ["update", "status", "--json"], "openclaw-bin.sh update status"],
   [OPENCLAW_BIN, ["--profile", "prod", "--update"], "openclaw-bin.sh --update"],
   [NPM_GUARD, ["i", "-g", "openclaw@latest"], "npm-guard.sh i -g openclaw@latest"],
   [NPM_GUARD, ["install", "--global", "--force", "openclaw"], "npm-guard.sh install --global --force"],
@@ -146,6 +267,28 @@ assert(
   !versionAttempt.stdout.includes("pulling a newer image tag"),
   "openclaw --version does not write the refusal to stdout",
 );
+
+for (const [args, label] of [
+  [["update", "cleanup", "--dry-run"], "openclaw-bin.sh cleanup --dry-run"],
+  [
+    ["update", "cleanup", "--json", "--dry-run"],
+    "openclaw-bin.sh cleanup --json --dry-run",
+  ],
+  [
+    ["--profile", "work", "update", "--dry-run", "cleanup", "--json"],
+    "openclaw-bin.sh profile, dry-run, then cleanup",
+  ],
+]) {
+  const result = runWrapper(OPENCLAW_BIN, args);
+  assert(
+    !result.stderr.includes("pulling a newer image tag"),
+    `${label} does not print the update refusal`,
+  );
+  assert(
+    !result.stdout.includes("pulling a newer image tag"),
+    `${label} does not write the refusal to stdout`,
+  );
+}
 
 if (failed > 0) {
   console.error(`${failed} failed, ${passed} passed`);
