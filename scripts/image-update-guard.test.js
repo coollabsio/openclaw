@@ -156,6 +156,16 @@ expectUpdate(
   "dry-run consumed as --channel value",
 );
 expectUpdate(
+  ["update", "--channel", "--dry-run", "cleanup"],
+  true,
+  "dry-run consumed as --channel value before cleanup",
+);
+expectUpdate(
+  ["update", "--dry-run", "--", "cleanup"],
+  false,
+  "dry-run, end of options, then cleanup",
+);
+expectUpdate(
   ["update", "--channel", "beta", "cleanup", "--dry-run"],
   true,
   "channel before cleanup dry-run",
